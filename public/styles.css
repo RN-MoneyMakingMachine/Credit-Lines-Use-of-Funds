@@ -505,7 +505,7 @@ a.fund:focus-visible {
 
 .bignums {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 32px;
   margin-top: 56px;
   padding-top: 32px;
@@ -668,13 +668,14 @@ a.fund:focus-visible {
   display: grid;
   grid-template-columns:
     36px
-    minmax(120px, 1.4fr)
-    minmax(110px, 1fr)
-    minmax(120px, 1.4fr)
-    84px
-    minmax(110px, 1fr)
-    minmax(140px, 1fr)
-    60px;
+    minmax(105px, 1.3fr)
+    minmax(95px, 1fr)
+    minmax(105px, 1.3fr)
+    80px
+    minmax(95px, 1fr)
+    minmax(95px, 1fr)
+    minmax(125px, 1fr)
+    56px;
   gap: 10px;
   align-items: center;
 }
@@ -1120,8 +1121,9 @@ table.schedule.history-table {
   .pay-grid .c-risk { order: 4; grid-column: 1 / -1; }
   .pay-grid .c-rev { order: 5; grid-column: 1 / -1; }
   .pay-grid .c-back { order: 6; }
-  .pay-grid .c-backdate { order: 7; }
-  .pay-grid .c-remove { order: 8; }
+  .pay-grid .c-safe { order: 7; }
+  .pay-grid .c-backdate { order: 8; grid-column: 1 / -1; }
+  .pay-grid .c-remove { order: 9; }
 
   .pay:not(.is-rev) .rev-only {
     display: none;

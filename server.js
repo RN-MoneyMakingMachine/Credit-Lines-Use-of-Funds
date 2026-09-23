@@ -316,6 +316,7 @@ function summarize(data) {
   let drawn = 0;
   let interest = 0;
   let count = 0;
+  let safe = 0;
   for (const disp of Array.isArray(d.dispositions) ? d.dispositions : []) {
     if (!isObject(disp)) continue;
     const amount = Math.max(0, Math.round(num(disp.amount)));
@@ -323,6 +324,9 @@ function summarize(data) {
     drawn += amount;
     interest += amount * annual * days / 360;
     count += 1;
+    for (const p of Array.isArray(disp.payments) ? disp.payments : []) {
+      if (isObject(p) && p.revenue) safe += Math.max(0, Math.round(num(p.toCredit)));
+    }
   }
   const used = limit > 0 ? Math.max(0, limit - available) : 0;
   // The next unpaid payment: interest every 30 days per disposition, principal with the last one.
@@ -345,7 +349,7 @@ function summarize(data) {
       break;
     }
   }
-  return { limit, used, available, cushion, drawn, interest, count, next, left: available - cushion - drawn };
+  return { limit, used, available, cushion, drawn, interest, count, next, safe, left: available - cushion - drawn };
 }
 
 // Ids of every disposition and payment in a record.
@@ -457,8 +461,8 @@ app.get('/api/lines/:line/export.csv', async (req, res, next) => {
     const bank = LINES[id].name;
     const rows = [[
       'Disposition', 'Drawn on', 'Days', 'Back to ' + bank + ' on', 'Disposition amount', 'Disposition interest', 'Repaid',
-      'Payment', 'Amount', 'Type', 'True cost', 'Interest', 'Brings back', 'Comes back on', 'Net after interest', 'Paid',
-      'If we do not pay'
+      'Payment', 'Amount', 'Type', 'True cost', 'Interest', 'Brings back', 'Comes back on', 'Net after interest',
+      'Set aside to repay', 'Paid', 'If we do not pay'
     ]];
     (Array.isArray(d.dispositions) ? d.dispositions : []).filter(isObject).forEach((disp, i) => {
       const amount = Math.max(0, Math.round(num(disp.amount)));
@@ -467,7 +471,7 @@ app.get('/api/lines/:line/export.csv', async (req, res, next) => {
       const drawnOn = /^\d{4}-\d{2}-\d{2}$/.test(disp.date || '') ? disp.date : '';
       const head = [name, drawnOn, days, addDays(drawnOn, days), amount, amount * annual * days / 360, disp.repaid ? 'Yes' : 'No'];
       const payments = (Array.isArray(disp.payments) ? disp.payments : []).filter(isObject);
-      if (!payments.length) rows.push(head.concat(['', '', '', '', '', '', '', '', '', '']));
+      if (!payments.length) rows.push(head.concat(['', '', '', '', '', '', '', '', '', '', '']));
       payments.forEach((p) => {
         const pay = Math.max(0, Math.round(num(p.amount)));
         const interest = pay * annual * days / 360;
@@ -476,7 +480,8 @@ app.get('/api/lines/:line/export.csv', async (req, res, next) => {
         const backDate = revenue && /^\d{4}-\d{2}-\d{2}$/.test(p.backDate || '') ? p.backDate : '';
         rows.push(head.concat([
           String(p.name || '').trim(), pay, revenue ? 'Adds revenue' : 'Obligation', pay + interest, interest,
-          back || '', backDate, back ? back - pay - interest : '', p.paid ? 'Yes' : 'No', String(p.risk || '').trim()
+          back || '', backDate, back ? back - pay - interest : '',
+          revenue && num(p.toCredit) > 0 ? Math.round(num(p.toCredit)) : '', p.paid ? 'Yes' : 'No', String(p.risk || '').trim()
         ]));
       });
     });

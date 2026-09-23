@@ -29,6 +29,7 @@
     var drawn = 0;
     var interest = 0;
     var count = 0;
+    var safe = 0;
     var nextLines = [];
     (data.lines || []).forEach(function (line) {
       var row = document.querySelector('.fund[data-line="' + line.id + '"]');
@@ -44,6 +45,7 @@
       drawn += line.drawn;
       interest += line.interest;
       count += line.count;
+      safe += line.safe || 0;
       if (line.next) {
         var p = document.createElement('p');
         p.className = 'next-line';
@@ -57,10 +59,11 @@
     });
     var nextWrap = document.getElementById('next-payments');
     nextWrap.replaceChildren.apply(nextWrap, nextLines);
-    $('combined').textContent = drawn > 0
+    $('combined').textContent = (drawn > 0
       ? 'Across both lines we have drawn ' + money(drawn) + ' in ' + plural(count, 'disposition', 'dispositions') +
         '. Paying it back will cost ' + money(interest) + ' in interest, ' + money(drawn + interest) + ' in total.'
-      : 'Nothing drawn from either line yet.';
+      : 'Nothing drawn from either line yet.') +
+      (safe > 0 ? ' The repayment safe across the lines holds ' + money(safe) + '.' : '');
     $('status').textContent = 'Open a line to plan it. Changes save automatically.';
     $('status').classList.remove('bad');
   }

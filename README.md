@@ -22,6 +22,7 @@ Everyone who has the access code sees and edits the same records. Changes save a
 * Interest is paid monthly: one payment of amount x annual rate x 30 / 360 every 30 days after the draw, and the principal goes back together with the last one. The monthly payments add up to the total interest.
 * A payment really costs amount + amount x annual rate x days / 360, using the days of its disposition.
 * A revenue payment that brings money back: net = brings back minus true cost.
+* Part of what a revenue payment brings back can be set aside to repay the credit. Those amounts add up to the repayment safe, shown against what is still to pay.
 * Already in use before this page = line total minus available today (draws made before the family started using the page).
 * Still available = available today minus cushion minus everything drawn. Negative means over the line.
 

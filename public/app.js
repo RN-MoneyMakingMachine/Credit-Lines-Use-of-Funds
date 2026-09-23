@@ -173,7 +173,7 @@
   }
 
   function emptyPayment() {
-    return { id: uid(), name: '', amount: 0, risk: '', revenue: false, back: 0, backDate: '', paid: false };
+    return { id: uid(), name: '', amount: 0, risk: '', revenue: false, back: 0, backDate: '', toCredit: 0, paid: false };
   }
 
   function newDisposition() {
@@ -197,6 +197,7 @@
       revenue: !!p.revenue,
       back: money0(p.back),
       backDate: dateStr(p.backDate),
+      toCredit: p.revenue ? money0(p.toCredit) : 0,
       paid: !!p.paid
     };
   }
@@ -363,7 +364,7 @@
     var annual = annualRate(r);
     var t = {
       annual: annual, drawn: 0, interest: 0, revenue: 0, obligations: 0,
-      back: 0, backCost: 0, hasBack: false, count: r.dispositions.length
+      back: 0, backCost: 0, hasBack: false, safe: 0, count: r.dispositions.length
     };
     r.dispositions.forEach(function (d) {
       t.drawn += d.amount;
@@ -371,6 +372,7 @@
       d.payments.forEach(function (p) {
         if (p.revenue) {
           t.revenue += p.amount;
+          t.safe += p.toCredit;
           if (p.back > 0) {
             t.hasBack = true;
             t.back += p.back;
@@ -468,6 +470,7 @@
         cell('c-risk', 'If we do not pay', el('input', { type: 'text', 'data-pf': 'risk', placeholder: 'What happens', autocomplete: 'off', value: p.risk })),
         cell('c-rev', 'Adds revenue', el('input', { type: 'checkbox', class: 'switch', role: 'switch', 'data-pf': 'revenue', checked: p.revenue })),
         cell('c-back rev-only', 'Brings back', moneyInput({ 'data-pf': 'back' }, p.back)),
+        cell('c-safe rev-only', 'Set aside to repay the credit', moneyInput({ 'data-pf': 'toCredit' }, p.toCredit)),
         cell('c-backdate rev-only', 'Comes back on', el('input', { type: 'date', 'data-pf': 'backDate', value: p.backDate })),
         el('div', { class: 'cell c-remove' }, [
           el('button', { type: 'button', class: 'link quiet', 'data-act': 'remove-pay', text: 'Remove' })
@@ -484,7 +487,7 @@
     select.value = String(d.days);
 
     var head = el('div', { class: 'pay-head', 'aria-hidden': 'true' }, [
-      'Paid', 'Payment', 'Amount', 'If we do not pay', 'Adds revenue', 'Brings back', 'Comes back on', ''
+      'Paid', 'Payment', 'Amount', 'If we do not pay', 'Adds revenue', 'Brings back', 'To repay', 'Comes back on', ''
     ].map(function (t) { return el('span', { text: t }); }));
 
     var block = el('article', { class: 'disp', 'data-id': d.id }, [
@@ -615,6 +618,15 @@
         nodes.push(el('span', { class: 'bad', text: 'short by ' + money(-net) + ' of its true cost.' }));
       }
     }
+    if (p.revenue && p.toCredit > 0) {
+      var sep2 = nodes.length ? ' ' : '';
+      if (p.back > 0 && p.toCredit > p.back) {
+        if (sep2) text(sep2);
+        nodes.push(el('span', { class: 'bad', text: 'Set aside ' + money(p.toCredit) + ' is more than the ' + money(p.back) + ' that comes back.' }));
+      } else {
+        text(sep2 + money(p.toCredit) + ' of it is set aside to repay ' + BANK + '.');
+      }
+    }
     if (p.revenue && parseDate(p.backDate) !== null) {
       var diff = Math.round((due - parseDate(p.backDate)) / DAY_MS);
       var sep = nodes.length ? ' ' : '';
@@ -681,6 +693,7 @@
     legendEl.replaceChildren.apply(legendEl, legend);
 
     // Big numbers
+    $('big-safe').textContent = money(t.safe);
     $('big-cushion').textContent = money(record.cushion.amount);
     $('big-drawn').textContent = money(t.drawn);
     $('big-drawn-label').textContent = 'drawn from ' + BANK + ' in ' + plural(t.count, 'disposition', 'dispositions');
@@ -718,6 +731,9 @@
       parts.push(document.createTextNode(' The revenue payments are expected to bring back '));
       parts.push(el('span', { class: 'gold', text: money(t.back) }));
       parts.push(document.createTextNode(', ' + money(Math.abs(diff)) + (diff >= 0 ? ' more' : ' less') + ' than they cost with interest.'));
+    }
+    if (t.safe > 0) {
+      parts.push(document.createTextNode(' Of what comes back, ' + money(t.safe) + ' is set aside to repay the credit.'));
     }
     split.replaceChildren.apply(split, parts);
 
@@ -797,15 +813,23 @@
       ])])
     ]);
 
-    wrap.replaceChildren(
+    var safe = totals(record).safe;
+    var still = total - repaid;
+    var parts = [
       el('div', { class: 'table-scroll' }, [table]),
-      el('p', { class: 'muted schedule-note', text: 'Repaid so far ' + money(repaid) + '. Still to pay ' + money(total - repaid) + '.' }),
-      next ? el('p', { class: 'next-payment' }, [
-        'Next payment to ' + BANK + ': ',
-        el('strong', { text: money(next.amount) + ' on ' + fmtDate(next.date) }),
-        ' (' + dispName(next.d) + ').'
-      ]) : el('p', { class: 'next-payment', text: 'Everything is paid back. Nothing pending.' })
-    );
+      el('p', { class: 'muted schedule-note', text: 'Repaid so far ' + money(repaid) + '. Still to pay ' + money(still) + '.' })
+    ];
+    if (safe > 0 && still > 0) {
+      parts.push(el('p', { class: 'muted safe-note', text:
+        'The repayment safe holds ' + money(safe) + ' of money on its way back: it covers ' +
+        Math.min(100, Math.round(safe / still * 100)) + '% of the ' + money(still) + ' still to pay.' }));
+    }
+    parts.push(next ? el('p', { class: 'next-payment' }, [
+      'Next payment to ' + BANK + ': ',
+      el('strong', { text: money(next.amount) + ' on ' + fmtDate(next.date) }),
+      ' (' + dispName(next.d) + ').'
+    ]) : el('p', { class: 'next-payment', text: 'Everything is paid back. Nothing pending.' }));
+    wrap.replaceChildren.apply(wrap, parts);
 
     if (focusKey) {
       var parts = focusKey.split(':');
@@ -917,6 +941,7 @@
       else if (pf === 'risk') p.risk = t.value;
       else if (pf === 'revenue') p.revenue = t.checked;
       else if (pf === 'back') p.back = reformatMoney(t);
+      else if (pf === 'toCredit') p.toCredit = reformatMoney(t);
       else if (pf === 'backDate') p.backDate = dateStr(t.value);
       else if (pf === 'paid') p.paid = t.checked;
       else return;
@@ -1382,6 +1407,12 @@
     if (coming) {
       lines.push('Next payment to ' + BANK + ': ' + money(coming.amount) + ' on ' + fmtDate(coming.date) + '.');
     }
+    if (t.safe > 0) {
+      var owed = 0;
+      allPaymentEvents(r, annual).forEach(function (e) { if (!e.paid) owed += e.amount; });
+      lines.push('Repayment safe: ' + money(t.safe) + ' of what comes back is set aside for the credit' +
+        (owed > 0 ? ', covering ' + Math.min(100, Math.round(t.safe / owed * 100)) + '% of the ' + money(owed) + ' still to pay.' : '.'));
+    }
     var assigned = t.revenue + t.obligations;
     if (assigned > 0) {
       var s = 'Of what is assigned, ' + money(t.revenue) + ' (' + Math.round(t.revenue / assigned * 100) +
@@ -1422,6 +1453,7 @@
             line += ' Brings back ' + money(p.back) + (backT !== null ? ' on ' + fmtDate(backT) : '') + ', ' +
               (net >= 0 ? 'net ' + money(net) + ' after interest.' : 'short by ' + money(-net) + ' of its true cost.');
           }
+          if (p.toCredit > 0) line += ' ' + money(p.toCredit) + ' of it set aside to repay.';
           if (backT !== null) {
             var days = Math.round((due - backT) / DAY_MS);
             line += days > 0 ? ' Arrives ' + plural(days, 'day', 'days') + ' before ' + BANK + ' is due.'

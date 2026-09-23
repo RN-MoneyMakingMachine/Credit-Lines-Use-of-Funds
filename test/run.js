@@ -457,6 +457,17 @@ async function testMath() {
   type(a, a.$('[data-pf="back"]', row), '1500000');
   setValue(a, a.$('[data-pf="backDate"]', row), '2026-12-15');
 
+  // Set aside part of what comes back to repay the credit
+  type(a, a.$('[data-pf="toCredit"]', row), '1600000');
+  check('setting aside more than comes back is flagged',
+    text(a.$('.pay-calc .bad', row)) === 'Set aside $1,600,000 is more than the $1,500,000 that comes back.', calc());
+  type(a, a.$('[data-pf="toCredit"]', row), '750000');
+  check('set aside line', /\$750,000 of it is set aside to repay Kapital\./.test(calc()), calc());
+  check('safe big number', text(a.$('#big-safe')) === '$750,000');
+  check('split sentence gains the safe', /Of what comes back, \$750,000 is set aside to repay the credit\.$/.test(text(a.$('#split-sentence'))),
+    text(a.$('#split-sentence')));
+  blur(a);
+
   a.$('[data-pf="paid"]', row).click();
   check('paid row dims', row.classList.contains('is-paid'));
   check('paid appended', /Paid\.$/.test(calc()), calc());
@@ -504,6 +515,8 @@ async function testMath() {
   check('the highlight moves to the next unpaid payment', a.$$('#schedule tbody tr')[1].classList.contains('is-next'));
   a.$('input[type="checkbox"]', a.$$('#schedule tbody tr')[4]).click();
   check('ticking the principal row marks the disposition repaid', /^Repaid so far \$6,117,500\./.test(text(a.$('.schedule-note'))), text(a.$('.schedule-note')));
+  check('schedule shows the repayment safe', text(a.$('.safe-note')) ===
+    'The repayment safe holds $750,000 of money on its way back: it covers 7% of the $10,313,333 still to pay.', text(a.$('.safe-note')));
 
   // Search
   type(a, a.$('#search'), 'roaster');
@@ -529,6 +542,7 @@ async function testMath() {
   check('record reached the server', onServer.data.dispositions.length === 2 && onServer.data.available === 17300000 &&
     onServer.data.limit === 20000000 &&
     onServer.data.dispositions[0].intPaid['1'] === true && onServer.data.dispositions[0].repaid === true &&
+    onServer.data.dispositions[0].payments[0].toCredit === 750000 &&
     onServer.data.dispositions[0].payments[0].back === 1500000, JSON.stringify(onServer.data).slice(0, 300));
   check('collapsed state is not in the record', !JSON.stringify(onServer.data).includes('collapsed'));
 
@@ -540,6 +554,8 @@ async function testMath() {
   check('summary numbers the payments', /\n1\. Coffee beans, \$1,000,000, really costs \$1,039,167\. Adds revenue\. Brings back \$1,500,000 on Dec 15, 2026, net \$460,833 after interest\./.test(summary), summary);
   check('summary has the monthly interest sentence', /Interest paid monthly: 4 payments of \$58,750, the first on Oct 23, 2026, the last with the principal on Jan 21, 2027\./.test(summary), summary);
   check('summary has the next payment', /\nNext payment to Kapital: \$58,750 on Nov 22, 2026\./.test(summary), summary);
+  check('summary has the repayment safe', /\nRepayment safe: \$750,000 of what comes back is set aside for the credit, covering 7% of the \$10,313,333 still to pay\./.test(summary), summary);
+  check('summary payment shows the set aside', /\$750,000 of it set aside to repay\./.test(summary), summary);
   check('summary has obligation and if we do not pay', /\n2\. Rent, \$5,000,000, really costs \$5,195,833\. Obligation\./.test(summary) &&
     /If we do not pay: The roaster stops for a month/.test(summary), summary);
   a.$('#modal-primary').click();
@@ -565,7 +581,7 @@ async function testMath() {
     csvBytes[0] === 0xEF && csvBytes[1] === 0xBB && csvBytes[2] === 0xBF &&
     /filename="aromaria-kapital-payments-/.test(res.headers.get('content-disposition') || ''));
   check('CSV header', csvLines[0].startsWith('Disposition,Drawn on,Days,Back to Kapital on,Disposition amount'), csvLines[0]);
-  check('CSV payment row with true cost and net', csvLines.some((l) => l.startsWith('Disposition 1,2026-09-23,120,2027-01-21,6000000,235000,Yes,Coffee beans,1000000,Adds revenue,1039167,39167,1500000,2026-12-15,460833,Yes,')),
+  check('CSV payment row with true cost, net and set aside', csvLines.some((l) => l.startsWith('Disposition 1,2026-09-23,120,2027-01-21,6000000,235000,Yes,Coffee beans,1000000,Adds revenue,1039167,39167,1500000,2026-12-15,460833,750000,Yes,')),
     csvLines.join('\n'));
   check('CSV text is quoted', csvLines.some((l) => l.endsWith(',The roaster stops for a month')), csvLines.join('\n'));
   check('CSV has the payment calendar', csvLines.includes('When we pay Kapital') && csvLines.includes('Date,Disposition,Payment,Amount,Paid') &&
@@ -885,6 +901,15 @@ async function testLines() {
   await waitSaved(az, 'Azteca 2');
   await waitFor(() => text(azRow.querySelector('[data-num="available"]')) === '$9,500,000', 'front page live update');
   check('front page updates live', true);
+
+  // The repayment safe reaches the summary and the front page.
+  type(az, az.$('[data-pf="toCredit"]', row), '400000');
+  blur(az);
+  await waitSaved(az, 'Azteca set aside');
+  const sum2 = await (await api('/api/summary')).json();
+  check('summary carries the safe', sum2.lines.find((l) => l.id === 'banco-azteca').safe === 400000, JSON.stringify(sum2.lines));
+  await waitFor(() => /The repayment safe across the lines holds \$400,000\.$/.test(text(home.$('#combined'))), 'front page safe');
+  check('front page shows the repayment safe', true);
 
   // Restore Banco Azteca from a downloaded backup file.
   const file = await (await api('/api/lines/kapital/export.json')).text();
