@@ -19,6 +19,7 @@ Everyone who has the access code sees and edits the same records. Changes save a
 * Annual rate = (TIIE + spread) / 100. The monthly rate shown is the annual rate / 12.
 * Interest on a disposition = amount x annual rate x days / 360 (simple interest).
 * Back to Kapital on = drawn on date + days (calendar days).
+* Interest is paid monthly: one payment of amount x annual rate x 30 / 360 every 30 days after the draw, and the principal goes back together with the last one. The monthly payments add up to the total interest.
 * A payment really costs amount + amount x annual rate x days / 360, using the days of its disposition.
 * A revenue payment that brings money back: net = brings back minus true cost.
 * Already in use before this page = line total minus available today (draws made before the family started using the page).

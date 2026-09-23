@@ -17,10 +17,19 @@
   function toLogin() { window.location.href = '/login'; }
 
 
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function fmtDate(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    if (!m) return iso || '';
+    return MONTHS[Number(m[2]) - 1] + ' ' + Number(m[3]) + ', ' + m[1];
+  }
+
   function render(data) {
     var drawn = 0;
     var interest = 0;
     var count = 0;
+    var nextLines = [];
     (data.lines || []).forEach(function (line) {
       var row = document.querySelector('.fund[data-line="' + line.id + '"]');
       if (!row) return;
@@ -35,7 +44,19 @@
       drawn += line.drawn;
       interest += line.interest;
       count += line.count;
+      if (line.next) {
+        var p = document.createElement('p');
+        p.className = 'next-line';
+        p.appendChild(document.createTextNode('Next payment to ' + line.name + ': '));
+        var strong = document.createElement('strong');
+        strong.textContent = money(line.next.amount) + ' on ' + fmtDate(line.next.date);
+        p.appendChild(strong);
+        p.appendChild(document.createTextNode('. Interest is paid monthly.'));
+        nextLines.push(p);
+      }
     });
+    var nextWrap = document.getElementById('next-payments');
+    nextWrap.replaceChildren.apply(nextWrap, nextLines);
     $('combined').textContent = drawn > 0
       ? 'Across both lines we have drawn ' + money(drawn) + ' in ' + plural(count, 'disposition', 'dispositions') +
         '. Paying it back will cost ' + money(interest) + ' in interest, ' + money(drawn + interest) + ' in total.'

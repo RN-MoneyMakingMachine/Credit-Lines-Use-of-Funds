@@ -799,6 +799,29 @@ table.schedule {
   opacity: 0.45;
 }
 
+.schedule tr.is-next td {
+  font-weight: 600;
+}
+
+.schedule tr.is-next td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--ink);
+  padding-left: 12px;
+}
+
+.next-payment {
+  margin-top: 12px;
+  font-size: 1.1rem;
+}
+
+.next-line {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.next-line strong {
+  color: var(--ink);
+}
+
 .schedule tfoot td {
   font-weight: 600;
   border-bottom: 0;

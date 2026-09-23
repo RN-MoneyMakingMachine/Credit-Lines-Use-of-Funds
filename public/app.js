@@ -180,7 +180,7 @@
     var now = stamp();
     return {
       id: uid(), name: '', amount: 0, date: todayStr(), days: 90,
-      created: now, updated: now, repaid: false, payments: [emptyPayment()]
+      created: now, updated: now, repaid: false, intPaid: {}, payments: [emptyPayment()]
     };
   }
 
@@ -201,6 +201,17 @@
     };
   }
 
+  // Which monthly interest payments were made: keys "1".."N", true when paid.
+  function normIntPaid(v, n) {
+    var out = {};
+    if (isObject(v)) {
+      for (var k = 1; k <= n; k++) {
+        if (v[k]) out[k] = true;
+      }
+    }
+    return out;
+  }
+
   function normDisposition(d) {
     if (!isObject(d)) return null;
     var seen = {};
@@ -213,6 +224,7 @@
       created: Math.max(0, num(d.created)),
       updated: Math.max(0, num(d.updated)),
       repaid: !!d.repaid,
+      intPaid: normIntPaid(d.intPaid, toDays(d.days) / 30),
       payments: (Array.isArray(d.payments) ? d.payments : [])
         .map(function (p) { return normPayment(p, seen); })
         .filter(Boolean)
@@ -301,6 +313,50 @@
     var start = parseDate(d.date);
     if (start === null) start = parseDate(todayStr());
     return start + d.days * DAY_MS;
+  }
+
+  // The monthly payments of one disposition: interest every 30 days after the draw,
+  // the principal together with the last one. They add up to the totals shown elsewhere.
+  function paymentEvents(d, annual) {
+    var n = Math.max(1, Math.round(d.days / 30));
+    var start = parseDate(d.date);
+    if (start === null) start = parseDate(todayStr());
+    var monthly = interestOf(d.amount, 30, annual);
+    var events = [];
+    for (var k = 1; k <= n; k++) {
+      events.push({
+        d: d,
+        k: k,
+        n: n,
+        date: start + k * 30 * DAY_MS,
+        interest: monthly,
+        amount: monthly + (k === n ? d.amount : 0),
+        principal: k === n,
+        paid: k === n ? d.repaid : !!d.intPaid[k]
+      });
+    }
+    return events;
+  }
+
+  function allPaymentEvents(r, annual) {
+    var events = [];
+    r.dispositions.forEach(function (d, i) {
+      if (d.amount <= 0) return;
+      paymentEvents(d, annual).forEach(function (e) {
+        e.order = i;
+        events.push(e);
+      });
+    });
+    events.sort(function (a, b) { return a.date - b.date || a.order - b.order || a.k - b.k; });
+    return events;
+  }
+
+  function nextPayment(r, annual) {
+    var events = allPaymentEvents(r, annual);
+    for (var i = 0; i < events.length; i++) {
+      if (!events[i].paid) return events[i];
+    }
+    return null;
   }
 
   function totals(r) {
@@ -497,9 +553,14 @@
     block.querySelector('[data-f="name"]').setAttribute('placeholder', 'Disposition ' + (index + 1));
 
     var interest = interestOf(d.amount, d.days, annual);
+    var events = paymentEvents(d, annual);
+    var monthlyText = events.length === 1
+      ? 'Interest is paid in one payment of ' + money(events[0].interest) + ' together with the principal.'
+      : 'Interest is paid monthly: ' + events.length + ' payments of ' + money(events[0].interest) +
+        ', the first on ' + fmtDate(events[0].date) + ', the last with the principal.';
     block.querySelector('.facts').textContent =
       'Back to ' + BANK + ' on ' + fmtDate(maturity(d)) + '. Interest ' + money(interest) +
-      '. Total to pay ' + money(d.amount + interest) + '.';
+      '. Total to pay ' + money(d.amount + interest) + '. ' + monthlyText;
 
     var assigned = 0;
     var paidCount = 0;
@@ -685,61 +746,70 @@
   function renderSchedule(annual) {
     var wrap = $('schedule');
     var active = document.activeElement;
-    var focusId = active && wrap.contains(active) ? active.getAttribute('data-id') : null;
+    var focusKey = active && wrap.contains(active) && active.getAttribute('data-id')
+      ? active.getAttribute('data-id') + ':' + active.getAttribute('data-k')
+      : null;
 
-    var items = record.dispositions
-      .map(function (d, i) { return { d: d, i: i, due: maturity(d) }; })
-      .filter(function (x) { return x.d.amount > 0; })
-      .sort(function (a, b) { return a.due - b.due || a.i - b.i; });
-
-    if (!items.length) {
+    var events = allPaymentEvents(record, annual);
+    if (!events.length) {
       wrap.replaceChildren(el('p', { class: 'muted', text: 'Nothing to pay yet.' }));
       return;
     }
 
-    var sum = { principal: 0, interest: 0, total: 0, repaid: 0 };
-    var rows = items.map(function (x) {
-      var d = x.d;
-      var interest = interestOf(d.amount, d.days, annual);
-      sum.principal += d.amount;
-      sum.interest += interest;
-      sum.total += d.amount + interest;
-      if (d.repaid) sum.repaid += d.amount + interest;
-      return el('tr', { class: d.repaid ? 'is-paid' : '' }, [
-        el('td', { text: fmtDate(x.due) }),
-        el('td', { text: dispName(d) }),
-        el('td', { class: 'num', text: money(d.amount) }),
-        el('td', { class: 'num', text: money(interest) }),
-        el('td', { class: 'num', text: money(d.amount + interest) }),
+    var total = 0;
+    var repaid = 0;
+    var next = null;
+    events.forEach(function (e) {
+      total += e.amount;
+      if (e.paid) repaid += e.amount;
+      else if (!next) next = e;
+    });
+
+    var rows = events.map(function (e) {
+      var what = e.principal
+        ? (e.n === 1 ? 'Principal + interest' : 'Principal + last interest')
+        : 'Monthly interest ' + e.k + ' of ' + e.n;
+      var cls = (e.paid ? 'is-paid' : '') + (e === next ? ' is-next' : '');
+      return el('tr', { class: cls.trim() }, [
+        el('td', { text: fmtDate(e.date) }),
+        el('td', { text: dispName(e.d) }),
+        el('td', { class: e.principal ? '' : 'muted', text: what }),
+        el('td', { class: 'num', text: money(e.amount) }),
         el('td', { class: 'check' }, [
-          el('input', { type: 'checkbox', 'data-id': d.id, 'aria-label': 'Paid ' + dispName(d), checked: d.repaid })
+          el('input', {
+            type: 'checkbox', 'data-id': e.d.id, 'data-k': String(e.k), checked: e.paid,
+            'aria-label': 'Paid ' + what + ', ' + dispName(e.d)
+          })
         ])
       ]);
     });
 
     var table = el('table', { class: 'schedule' }, [
       el('thead', {}, [el('tr', {}, [
-        el('th', { text: 'Date' }), el('th', { text: 'Disposition' }),
-        el('th', { class: 'num', text: 'Principal' }), el('th', { class: 'num', text: 'Interest' }),
-        el('th', { class: 'num', text: 'Total to pay' }), el('th', { class: 'check', text: 'Paid' })
+        el('th', { text: 'Date' }), el('th', { text: 'Disposition' }), el('th', { text: 'Payment' }),
+        el('th', { class: 'num', text: 'Amount' }), el('th', { class: 'check', text: 'Paid' })
       ])]),
       el('tbody', {}, rows),
       el('tfoot', {}, [el('tr', {}, [
-        el('td', { text: 'Total' }), el('td'),
-        el('td', { class: 'num', text: money(sum.principal) }),
-        el('td', { class: 'num', text: money(sum.interest) }),
-        el('td', { class: 'num', text: money(sum.total) }),
+        el('td', { text: 'Total' }), el('td'), el('td'),
+        el('td', { class: 'num', text: money(total) }),
         el('td')
       ])])
     ]);
 
     wrap.replaceChildren(
       el('div', { class: 'table-scroll' }, [table]),
-      el('p', { class: 'muted schedule-note', text: 'Repaid so far ' + money(sum.repaid) + '. Still to pay ' + money(sum.total - sum.repaid) + '.' })
+      el('p', { class: 'muted schedule-note', text: 'Repaid so far ' + money(repaid) + '. Still to pay ' + money(total - repaid) + '.' }),
+      next ? el('p', { class: 'next-payment' }, [
+        'Next payment to ' + BANK + ': ',
+        el('strong', { text: money(next.amount) + ' on ' + fmtDate(next.date) }),
+        ' (' + dispName(next.d) + ').'
+      ]) : el('p', { class: 'next-payment', text: 'Everything is paid back. Nothing pending.' })
     );
 
-    if (focusId) {
-      var again = wrap.querySelector('input[data-id="' + focusId + '"]');
+    if (focusKey) {
+      var parts = focusKey.split(':');
+      var again = wrap.querySelector('input[data-id="' + parts[0] + '"][data-k="' + parts[1] + '"]');
       if (again) again.focus();
     }
   }
@@ -914,8 +984,17 @@
     var t = e.target;
     if (!loaded || t.type !== 'checkbox') return;
     var d = findDisp(t.getAttribute('data-id'));
-    if (!d || d.repaid === t.checked) return;
-    d.repaid = t.checked;
+    if (!d) return;
+    var k = Math.round(num(t.getAttribute('data-k')));
+    var n = Math.max(1, Math.round(d.days / 30));
+    if (k === n) {
+      if (d.repaid === t.checked) return;
+      d.repaid = t.checked;
+    } else {
+      if (!!d.intPaid[k] === t.checked) return;
+      if (t.checked) d.intPaid[k] = true;
+      else delete d.intPaid[k];
+    }
     touchDisp(d);
   }
 
@@ -1296,9 +1375,13 @@
     );
     lines.push(
       'TIIE ' + r.tiie + '% plus spread ' + r.spread + '%, ' + pct(annual * 100) + ' a year, ' +
-      pct(annual * 100 / 12) + ' a month. Interest to ' + BANK + ' ' + money(t.interest) + '. Total to repay ' +
+      pct(annual * 100 / 12) + ' a month. Interest to ' + BANK + ' ' + money(t.interest) + ', paid monthly. Total to repay ' +
       money(t.drawn + t.interest) + '.'
     );
+    var coming = nextPayment(r, annual);
+    if (coming) {
+      lines.push('Next payment to ' + BANK + ': ' + money(coming.amount) + ' on ' + fmtDate(coming.date) + '.');
+    }
     var assigned = t.revenue + t.obligations;
     if (assigned > 0) {
       var s = 'Of what is assigned, ' + money(t.revenue) + ' (' + Math.round(t.revenue / assigned * 100) +
@@ -1321,6 +1404,11 @@
         ' for ' + d.days + ' days. Back to ' + BANK + ' on ' + fmtDate(due) + '. Interest ' + money(interest) +
         '. Total to pay ' + money(d.amount + interest) + '.' + (d.repaid ? ' Repaid.' : '')
       );
+      var ev = paymentEvents(d, annual);
+      lines.push(ev.length === 1
+        ? 'Interest in one payment of ' + money(ev[0].interest) + ' with the principal on ' + fmtDate(ev[0].date) + '.'
+        : 'Interest paid monthly: ' + ev.length + ' payments of ' + money(ev[0].interest) + ', the first on ' +
+          fmtDate(ev[0].date) + ', the last with the principal on ' + fmtDate(ev[ev.length - 1].date) + '.');
       if (!d.payments.length) lines.push('No payments yet.');
       d.payments.forEach(function (p, i) {
         var cost = p.amount + interestOf(p.amount, d.days, annual);

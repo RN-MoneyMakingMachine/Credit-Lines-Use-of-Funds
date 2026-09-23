@@ -402,7 +402,8 @@ async function testMath() {
   type(a, amount, '6000000');
   setValue(a, days, '120');
   check('6,000,000 for 120 days, facts line',
-    text(a.$('.facts', block)) === 'Back to Kapital on Jan 21, 2027. Interest $235,000. Total to pay $6,235,000.', text(a.$('.facts', block)));
+    text(a.$('.facts', block)) === 'Back to Kapital on Jan 21, 2027. Interest $235,000. Total to pay $6,235,000. ' +
+      'Interest is paid monthly: 4 payments of $58,750, the first on Oct 23, 2026, the last with the principal.', text(a.$('.facts', block)));
   check('cost sentence', text(a.$('#cost-sentence')) ===
     'Paying Kapital back will cost $235,000 in interest. The $6,000,000 we draw becomes $6,235,000 by the time it is repaid.', text(a.$('#cost-sentence')));
   check('big numbers', text(a.$('#big-cushion')) === '$2,000,000' && text(a.$('#big-drawn')) === '$6,000,000' &&
@@ -481,14 +482,28 @@ async function testMath() {
   check('over the line warning', !a.$('#over').hidden && text(a.$('#over')) === 'Over the available line by $700,000.', text(a.$('#over')));
   blur(a);
 
+  // The payment calendar: monthly interest every 30 days, principal with the last payment.
   const rows = a.$$('#schedule tbody tr');
-  check('schedule sorted by maturity', rows.length === 2 && /^Jan 21, 2027/.test(text(rows[0])) && /^Feb 13, 2027/.test(text(rows[1])),
-    rows.map(text).join(' | '));
-  const cells = a.$$('td', rows[0]).map(text).join(' | ');
-  check('schedule row values', cells === 'Jan 21, 2027 | Disposition 1 | $6,000,000 | $235,000 | $6,235,000 | ', cells);
+  check('one row per monthly payment, sorted by date', rows.length === 6 &&
+    rows.map((r) => text(a.$('td', r))).join(' | ') === 'Oct 23, 2026 | Nov 22, 2026 | Dec 22, 2026 | Jan 14, 2027 | Jan 21, 2027 | Feb 13, 2027',
+    rows.map(text).join(' || '));
+  check('monthly interest row', a.$$('td', rows[0]).map(text).join(' | ') === 'Oct 23, 2026 | Disposition 1 | Monthly interest 1 of 4 | $58,750 | ',
+    a.$$('td', rows[0]).map(text).join(' | '));
+  check('principal row carries the last interest', a.$$('td', rows[4]).map(text).join(' | ') === 'Jan 21, 2027 | Disposition 1 | Principal + last interest | $6,058,750 | ',
+    a.$$('td', rows[4]).map(text).join(' | '));
+  check('second disposition monthly row', a.$$('td', rows[3]).map(text).join(' | ') === 'Jan 14, 2027 | Disposition 2 | Monthly interest 1 of 2 | $97,917 | ',
+    a.$$('td', rows[3]).map(text).join(' | '));
+  check('calendar total is the grand total to pay', text(a.$('#schedule tfoot')).includes('$16,430,833'), text(a.$('#schedule tfoot')));
+  check('the next payment is highlighted', rows[0].classList.contains('is-next') && !rows[1].classList.contains('is-next'));
+  check('next payment line', text(a.$('.next-payment')) === 'Next payment to Kapital: $58,750 on Oct 23, 2026 (Disposition 1).',
+    text(a.$('.next-payment')));
+
   a.$('input[type="checkbox"]', rows[0]).click();
-  check('repaid dims the row', a.$$('#schedule tbody tr')[0].classList.contains('is-paid'));
-  check('repaid so far', /^Repaid so far \$6,235,000\. Still to pay \$/.test(text(a.$('.schedule-note'))), text(a.$('.schedule-note')));
+  check('a paid interest payment dims its row', a.$$('#schedule tbody tr')[0].classList.contains('is-paid'));
+  check('repaid so far counts the interest payment', /^Repaid so far \$58,750\. Still to pay \$16,372,083\./.test(text(a.$('.schedule-note'))), text(a.$('.schedule-note')));
+  check('the highlight moves to the next unpaid payment', a.$$('#schedule tbody tr')[1].classList.contains('is-next'));
+  a.$('input[type="checkbox"]', a.$$('#schedule tbody tr')[4]).click();
+  check('ticking the principal row marks the disposition repaid', /^Repaid so far \$6,117,500\./.test(text(a.$('.schedule-note'))), text(a.$('.schedule-note')));
 
   // Search
   type(a, a.$('#search'), 'roaster');
@@ -513,6 +528,7 @@ async function testMath() {
   const onServer = await serverRecord();
   check('record reached the server', onServer.data.dispositions.length === 2 && onServer.data.available === 17300000 &&
     onServer.data.limit === 20000000 &&
+    onServer.data.dispositions[0].intPaid['1'] === true && onServer.data.dispositions[0].repaid === true &&
     onServer.data.dispositions[0].payments[0].back === 1500000, JSON.stringify(onServer.data).slice(0, 300));
   check('collapsed state is not in the record', !JSON.stringify(onServer.data).includes('collapsed'));
 
@@ -522,6 +538,8 @@ async function testMath() {
   check('summary header', summary.split('\n')[0] === 'AROMARIA, Kapital line, ' + fmtToday(), summary.split('\n')[0]);
   check('summary has the line total', summary.split('\n')[1] === 'Line total $20,000,000. Already in use before this page $2,700,000.', summary.split('\n')[1]);
   check('summary numbers the payments', /\n1\. Coffee beans, \$1,000,000, really costs \$1,039,167\. Adds revenue\. Brings back \$1,500,000 on Dec 15, 2026, net \$460,833 after interest\./.test(summary), summary);
+  check('summary has the monthly interest sentence', /Interest paid monthly: 4 payments of \$58,750, the first on Oct 23, 2026, the last with the principal on Jan 21, 2027\./.test(summary), summary);
+  check('summary has the next payment', /\nNext payment to Kapital: \$58,750 on Nov 22, 2026\./.test(summary), summary);
   check('summary has obligation and if we do not pay', /\n2\. Rent, \$5,000,000, really costs \$5,195,833\. Obligation\./.test(summary) &&
     /If we do not pay: The roaster stops for a month/.test(summary), summary);
   a.$('#modal-primary').click();
@@ -550,6 +568,10 @@ async function testMath() {
   check('CSV payment row with true cost and net', csvLines.some((l) => l.startsWith('Disposition 1,2026-09-23,120,2027-01-21,6000000,235000,Yes,Coffee beans,1000000,Adds revenue,1039167,39167,1500000,2026-12-15,460833,Yes,')),
     csvLines.join('\n'));
   check('CSV text is quoted', csvLines.some((l) => l.endsWith(',The roaster stops for a month')), csvLines.join('\n'));
+  check('CSV has the payment calendar', csvLines.includes('When we pay Kapital') && csvLines.includes('Date,Disposition,Payment,Amount,Paid') &&
+    csvLines.includes('2026-11-22,Disposition 1,Monthly interest 2 of 4,58750,No') &&
+    csvLines.includes('2026-10-23,Disposition 1,Monthly interest 1 of 4,58750,Yes') &&
+    csvLines.includes('2027-01-21,Disposition 1,Principal + last interest,6058750,Yes'), csvLines.join('\n'));
 
   // A payment named like a formula must not run as one in Excel.
   const row2b = a.$$('.pay', block)[1];
@@ -792,8 +814,8 @@ async function testLines() {
   setValue(az, az.$('[data-f="date"]', block), '2026-09-23');
   setValue(az, az.$('[data-f="days"]', block), '120');
   type(az, az.$('[data-f="amount"]', block), '6000000');
-  check('Banco Azteca facts line', text(az.$('.facts', block)) === 'Back to Banco Azteca on Jan 21, 2027. Interest $235,000. Total to pay $6,235,000.',
-    text(az.$('.facts', block)));
+  check('Banco Azteca facts line', text(az.$('.facts', block)) === 'Back to Banco Azteca on Jan 21, 2027. Interest $235,000. Total to pay $6,235,000. ' +
+    'Interest is paid monthly: 4 payments of $58,750, the first on Oct 23, 2026, the last with the principal.', text(az.$('.facts', block)));
   check('Banco Azteca drawn label', text(az.$('#big-drawn-label')) === 'drawn from Banco Azteca in 1 disposition');
   check('Banco Azteca cost sentence', /^Paying Banco Azteca back will cost \$235,000 in interest\./.test(text(az.$('#cost-sentence'))));
   const row = az.$('.pay', block);
@@ -841,7 +863,11 @@ async function testLines() {
     azRow.getAttribute('href') === '/banco-azteca');
   check('front page shows Banco Azteca numbers', text(azRow.querySelector('[data-num="available"]')) === '$9,000,000' &&
     text(azRow.querySelector('[data-num="drawn"]')) === '$6,000,000' && text(azRow.querySelector('[data-num="left"]')) === '$3,000,000');
+  check('summary has the next payment for Banco Azteca', a.next && a.next.amount === 58750 && a.next.date === '2026-10-23', JSON.stringify(a.next));
   check('front page shows the line total', text(azRow.querySelector('[data-num="limit"]')) === '$12,000,000');
+  check('front page shows the next payment', home.$$('#next-payments .next-line').some((n) =>
+    text(n) === 'Next payment to Banco Azteca: $58,750 on Oct 23, 2026. Interest is paid monthly.'),
+    home.$$('#next-payments .next-line').map(text).join(' | '));
   check('front page says when a line total is not set', text(home.$('.fund[data-line="kapital"] [data-num="limit"]')) === 'Not set');
   const cash = home.$('.fund[data-line="cash-flow"]');
   check('Cash flow holds its place, not clickable', cash.tagName === 'DIV' && /Coming soon/.test(text(cash)));

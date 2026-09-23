@@ -325,7 +325,27 @@ function summarize(data) {
     count += 1;
   }
   const used = limit > 0 ? Math.max(0, limit - available) : 0;
-  return { limit, used, available, cushion, drawn, interest, count, left: available - cushion - drawn };
+  // The next unpaid payment: interest every 30 days per disposition, principal with the last one.
+  let next = null;
+  for (const disp of Array.isArray(d.dispositions) ? d.dispositions : []) {
+    if (!isObject(disp)) continue;
+    const amount = Math.max(0, Math.round(num(disp.amount)));
+    if (amount <= 0) continue;
+    const days = [30, 60, 90, 120, 150, 180].includes(Math.round(num(disp.days))) ? Math.round(num(disp.days)) : 90;
+    const n = days / 30;
+    const monthly = amount * annual * 30 / 360;
+    const intPaid = isObject(disp.intPaid) ? disp.intPaid : {};
+    const drawnOn = /^\d{4}-\d{2}-\d{2}$/.test(disp.date || '') ? disp.date : '';
+    for (let k = 1; k <= n; k++) {
+      const paid = k === n ? !!disp.repaid : !!intPaid[k];
+      if (paid) continue;
+      const date = addDays(drawnOn, k * 30);
+      const pay = monthly + (k === n ? amount : 0);
+      if (!next || date < next.date) next = { date, amount: pay };
+      break;
+    }
+  }
+  return { limit, used, available, cushion, drawn, interest, count, next, left: available - cushion - drawn };
 }
 
 // Ids of every disposition and payment in a record.
@@ -460,6 +480,34 @@ app.get('/api/lines/:line/export.csv', async (req, res, next) => {
         ]));
       });
     });
+    // Second block: the payment calendar to the bank, one row per monthly payment.
+    const calendar = [];
+    (Array.isArray(d.dispositions) ? d.dispositions : []).filter(isObject).forEach((disp, i) => {
+      const amount = Math.max(0, Math.round(num(disp.amount)));
+      if (amount <= 0) return;
+      const days = [30, 60, 90, 120, 150, 180].includes(Math.round(num(disp.days))) ? Math.round(num(disp.days)) : 90;
+      const n = days / 30;
+      const monthly = amount * annual * 30 / 360;
+      const intPaid = isObject(disp.intPaid) ? disp.intPaid : {};
+      const name = String(disp.name || '').trim() || 'Disposition ' + (i + 1);
+      const drawnOn = /^\d{4}-\d{2}-\d{2}$/.test(disp.date || '') ? disp.date : '';
+      for (let k = 1; k <= n; k++) {
+        const principal = k === n;
+        calendar.push([
+          addDays(drawnOn, k * 30), name,
+          principal ? (n === 1 ? 'Principal + interest' : 'Principal + last interest') : 'Monthly interest ' + k + ' of ' + n,
+          monthly + (principal ? amount : 0),
+          (principal ? !!disp.repaid : !!intPaid[k]) ? 'Yes' : 'No'
+        ]);
+      }
+    });
+    if (calendar.length) {
+      calendar.sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+      rows.push([]);
+      rows.push(['When we pay ' + bank]);
+      rows.push(['Date', 'Disposition', 'Payment', 'Amount', 'Paid']);
+      calendar.forEach((r) => rows.push(r));
+    }
     attachment(res, 'aromaria-' + id + '-payments-' + mexicoDate(Date.now()) + '.csv', 'text/csv; charset=utf-8');
     res.send('\uFEFF' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n');
   } catch (err) {
