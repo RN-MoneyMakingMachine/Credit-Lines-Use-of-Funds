@@ -306,6 +306,126 @@ input.switch:checked::before {
   color: var(--red);
 }
 
+/* ---------- Navigation and labels ---------- */
+
+.crumbs {
+  margin-bottom: 40px;
+}
+
+.back {
+  color: var(--focus);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.back:hover {
+  text-decoration: underline;
+}
+
+.eyebrow {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+/* ---------- Front page (sources of funds) ---------- */
+
+.funds {
+  margin-top: 72px;
+}
+
+.funds-head,
+.fund {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) repeat(3, minmax(140px, 1fr)) 72px;
+  gap: 24px;
+  align-items: center;
+}
+
+.funds-head {
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.funds-head .num,
+.fund-num {
+  text-align: right;
+}
+
+.fund {
+  padding: 32px 0;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+a.fund:hover .fund-name,
+a.fund:focus-visible .fund-name {
+  color: var(--focus);
+}
+
+a.fund:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.fund-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fund-name {
+  font-size: 2rem;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.fund-kind {
+  color: var(--muted);
+}
+
+.fund-num {
+  display: flex;
+  flex-direction: column;
+}
+
+.fund-num .label {
+  display: none;
+}
+
+.fund-num .value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.fund-go {
+  justify-self: end;
+  color: var(--focus);
+}
+
+.fund.soon {
+  color: var(--muted);
+  cursor: default;
+}
+
+.fund.soon .fund-name {
+  color: var(--muted);
+}
+
+.funds + .sentence {
+  margin-top: 40px;
+}
+
 /* ---------- Line ---------- */
 
 .line {
@@ -781,6 +901,47 @@ table.schedule {
 @media (max-width: 900px) {
   .page {
     padding: 40px 16px 80px;
+  }
+
+  .crumbs {
+    margin-bottom: 28px;
+  }
+
+  .funds {
+    margin-top: 48px;
+  }
+
+  .funds-head {
+    display: none;
+  }
+
+  .fund {
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 28px 0;
+  }
+
+  .fund-title {
+    grid-column: 1 / -1;
+  }
+
+  .fund-num {
+    text-align: left;
+  }
+
+  .fund-num .label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  .fund-num .value {
+    font-size: 1.3rem;
+  }
+
+  .fund-go {
+    justify-self: start;
+    align-self: end;
   }
 
   h1 {

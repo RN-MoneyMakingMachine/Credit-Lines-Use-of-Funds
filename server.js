@@ -27,6 +27,12 @@ const LOGIN_LIMIT = 20;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const HEARTBEAT_MS = 25 * 1000;
 
+// Each source of funds with its own shared record. Kapital keeps the original 'main' record.
+const LINES = {
+  kapital: { record: 'main', name: 'Kapital' },
+  'banco-azteca': { record: 'banco-azteca', name: 'Banco Azteca' }
+};
+
 const store = createStore();
 const app = express();
 
@@ -228,16 +234,29 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/record', async (req, res, next) => {
+function lineFor(req, res) {
+  const id = req.params.line || 'kapital';
+  if (!Object.prototype.hasOwnProperty.call(LINES, id)) {
+    res.status(404).json({ error: 'Unknown line.' });
+    return null;
+  }
+  return id;
+}
+
+async function getRecord(req, res, next) {
   try {
-    res.json(await store.get());
+    const id = lineFor(req, res);
+    if (!id) return;
+    res.json(await store.get(LINES[id].record));
   } catch (err) {
     next(err);
   }
-});
+}
 
-app.put('/api/record', jsonBody, async (req, res, next) => {
+async function putRecord(req, res, next) {
   try {
+    const id = lineFor(req, res);
+    if (!id) return;
     const body = req.body;
     if (!isObject(body)) return res.status(400).json({ error: 'Expected {baseVersion, data}.' });
     const baseVersion = Number(body.baseVersion);
@@ -246,11 +265,57 @@ app.put('/api/record', jsonBody, async (req, res, next) => {
     }
     if (!validShape(body.data)) return res.status(400).json({ error: 'The record does not have the expected shape.' });
 
-    const result = await store.save(body.data, baseVersion);
+    const result = await store.save(LINES[id].record, body.data, baseVersion);
     if (result.conflict) return res.status(409).json({ version: result.version, data: result.data });
 
     res.json({ version: result.version });
-    broadcast('changed', { version: result.version });
+    broadcast('changed', { line: id, version: result.version });
+  } catch (err) {
+    next(err);
+  }
+}
+
+app.get('/api/lines/:line/record', getRecord);
+app.put('/api/lines/:line/record', jsonBody, putRecord);
+// Older pages saved to /api/record. It stays as the Kapital record so an open tab keeps working.
+app.get('/api/record', getRecord);
+app.put('/api/record', jsonBody, putRecord);
+
+function num(v) {
+  const n = typeof v === 'number' ? v : parseFloat(String(v === undefined || v === null ? '' : v).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Headline numbers per line for the front page. Same math as the line page.
+function summarize(data) {
+  const d = isObject(data) ? data : {};
+  const tiie = d.tiie === undefined || d.tiie === null || d.tiie === '' ? 6.75 : num(d.tiie);
+  const spread = d.spread === undefined || d.spread === null || d.spread === '' ? 5 : num(d.spread);
+  const annual = (tiie + spread) / 100;
+  const available = Math.max(0, Math.round(num(d.available)));
+  const cushion = isObject(d.cushion) ? Math.max(0, Math.round(num(d.cushion.amount))) : 0;
+  let drawn = 0;
+  let interest = 0;
+  let count = 0;
+  for (const disp of Array.isArray(d.dispositions) ? d.dispositions : []) {
+    if (!isObject(disp)) continue;
+    const amount = Math.max(0, Math.round(num(disp.amount)));
+    const days = [30, 60, 90, 120, 150, 180].includes(Math.round(num(disp.days))) ? Math.round(num(disp.days)) : 90;
+    drawn += amount;
+    interest += amount * annual * days / 360;
+    count += 1;
+  }
+  return { available, cushion, drawn, interest, count, left: available - cushion - drawn };
+}
+
+app.get('/api/summary', async (req, res, next) => {
+  try {
+    const lines = [];
+    for (const id of Object.keys(LINES)) {
+      const rec = await store.get(LINES[id].record);
+      lines.push(Object.assign({ id, name: LINES[id].name, version: rec.version }, summarize(rec.data)));
+    }
+    res.json({ lines });
   } catch (err) {
     next(err);
   }
@@ -267,6 +332,11 @@ app.get('/api/events', (req, res) => {
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
 });
+
+for (const id of Object.keys(LINES)) {
+  app.get('/' + id, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'line.html'), fileOptions));
+}
+app.get('/cash-flow', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'cash-flow.html'), fileOptions));
 
 app.use(express.static(PUBLIC_DIR, Object.assign({ index: 'index.html' }, fileOptions)));
 
@@ -291,7 +361,7 @@ let server;
 
 store.init().then(() => {
   server = app.listen(PORT, '0.0.0.0', () => {
-    console.log('Kapital line listening on port ' + PORT + ' (' + store.kind + ' store)');
+    console.log('Use of funds listening on port ' + PORT + ' (' + store.kind + ' store)');
   });
 }).catch((err) => {
   console.error('Could not open the record store:', err.message);

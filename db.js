@@ -4,13 +4,15 @@
 // PostgreSQL when DATABASE_URL is set, otherwise a JSON file at DATA_FILE.
 // Both stores expose the same interface:
 //   init()
-//   get()                    -> { version, data }
-//   save(data, baseVersion)  -> { conflict: false, version } or { conflict: true, version, data }
+//   get(id)                      -> { version, data }
+//   save(id, data, baseVersion)  -> { conflict: false, version } or { conflict: true, version, data }
+// Each credit line has its own record id. The first line (Kapital) uses the id 'main'.
+// A record that does not exist yet is created empty on first use.
 
 const fs = require('fs');
 const path = require('path');
 
-const RECORD_ID = 'main';
+const MAIN_ID = 'main';
 
 function emptyRecord() {
   return {
@@ -31,10 +33,10 @@ function pgStore(connectionString) {
     ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined
   });
 
-  async function ensureRow(client) {
+  async function ensureRow(client, id) {
     await client.query(
       'INSERT INTO records (id, version, data) VALUES ($1, 0, $2) ON CONFLICT (id) DO NOTHING',
-      [RECORD_ID, JSON.stringify(emptyRecord())]
+      [id, JSON.stringify(emptyRecord())]
     );
   }
 
@@ -49,24 +51,24 @@ function pgStore(connectionString) {
           'data jsonb not null, ' +
           'updated_at timestamptz default now())'
       );
-      await ensureRow(pool);
+      await ensureRow(pool, MAIN_ID);
     },
 
-    async get() {
-      let r = await pool.query('SELECT version, data FROM records WHERE id = $1', [RECORD_ID]);
+    async get(id) {
+      let r = await pool.query('SELECT version, data FROM records WHERE id = $1', [id]);
       if (!r.rows.length) {
-        await ensureRow(pool);
-        r = await pool.query('SELECT version, data FROM records WHERE id = $1', [RECORD_ID]);
+        await ensureRow(pool, id);
+        r = await pool.query('SELECT version, data FROM records WHERE id = $1', [id]);
       }
       return { version: Number(r.rows[0].version), data: r.rows[0].data };
     },
 
-    async save(data, baseVersion) {
+    async save(id, data, baseVersion) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await ensureRow(client);
-        const r = await client.query('SELECT version, data FROM records WHERE id = $1 FOR UPDATE', [RECORD_ID]);
+        await ensureRow(client, id);
+        const r = await client.query('SELECT version, data FROM records WHERE id = $1 FOR UPDATE', [id]);
         const current = Number(r.rows[0].version);
         if (current !== Number(baseVersion)) {
           await client.query('ROLLBACK');
@@ -75,7 +77,7 @@ function pgStore(connectionString) {
         const next = current + 1;
         await client.query(
           'UPDATE records SET version = $2, data = $3, updated_at = now() WHERE id = $1',
-          [RECORD_ID, next, JSON.stringify(data)]
+          [id, next, JSON.stringify(data)]
         );
         await client.query('COMMIT');
         return { conflict: false, version: next };
@@ -94,8 +96,14 @@ function pgStore(connectionString) {
 }
 
 function fileStore(file) {
-  const target = path.resolve(file);
+  const mainFile = path.resolve(file);
   let chain = Promise.resolve();
+
+  // 'main' keeps DATA_FILE as it always was; other records sit next to it.
+  function fileFor(id) {
+    if (id === MAIN_ID) return mainFile;
+    return path.join(path.dirname(mainFile), 'record-' + id + '.json');
+  }
 
   // Serialize every operation so reads and writes never interleave.
   function run(fn) {
@@ -104,7 +112,7 @@ function fileStore(file) {
     return p;
   }
 
-  async function read() {
+  async function read(target) {
     try {
       const parsed = JSON.parse(await fs.promises.readFile(target, 'utf8'));
       return {
@@ -117,7 +125,7 @@ function fileStore(file) {
     }
   }
 
-  async function write(rec) {
+  async function write(target, rec) {
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
     const tmp = target + '.' + process.pid + '.' + Date.now() + '.tmp';
     await fs.promises.writeFile(tmp, JSON.stringify(rec));
@@ -130,25 +138,26 @@ function fileStore(file) {
     init() {
       return run(async () => {
         try {
-          await fs.promises.access(target);
+          await fs.promises.access(mainFile);
         } catch (_) {
-          await write({ version: 0, data: emptyRecord() });
+          await write(mainFile, { version: 0, data: emptyRecord() });
         }
       });
     },
 
-    get() {
-      return run(read);
+    get(id) {
+      return run(() => read(fileFor(id)));
     },
 
-    save(data, baseVersion) {
+    save(id, data, baseVersion) {
       return run(async () => {
-        const current = await read();
+        const target = fileFor(id);
+        const current = await read(target);
         if (current.version !== Number(baseVersion)) {
           return { conflict: true, version: current.version, data: current.data };
         }
         const next = current.version + 1;
-        await write({ version: next, data });
+        await write(target, { version: next, data });
         return { conflict: false, version: next };
       });
     },

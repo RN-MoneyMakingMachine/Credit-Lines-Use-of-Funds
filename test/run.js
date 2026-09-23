@@ -18,7 +18,9 @@ const CODE = 'test-code-123';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kapital-test-'));
 const DATA_FILE = path.join(TMP, 'record.json');
 const APP_JS = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+const LINE_HTML = fs.readFileSync(path.join(ROOT, 'public', 'line.html'), 'utf8');
+const HOME_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+const HOME_JS = fs.readFileSync(path.join(ROOT, 'public', 'home.js'), 'utf8');
 
 let server;
 let cookie = '';
@@ -64,12 +66,33 @@ function api(pathname, opts = {}) {
   return fetch(BASE + pathname, Object.assign({ redirect: 'manual' }, opts, { headers }));
 }
 
-async function serverRecord() {
-  const res = await api('/api/record');
+async function serverRecord(line = 'kapital') {
+  const res = await api('/api/lines/' + line + '/record');
   return res.json();
 }
 
 // ---------- Server ----------
+
+// Data that was already in the Kapital record before lines existed (row / file 'main').
+const SEED = {
+  available: 5000000, tiie: 6.75, spread: 5, cushion: { amount: 250000, note: 'Seeded' }, settingsUpdated: 1,
+  dispositions: [{ id: 'seed1', name: 'Seeded', amount: 1000000, date: '2026-09-23', days: 30, created: 1, updated: 1, repaid: false, payments: [] }]
+};
+
+async function seed() {
+  if (process.env.TEST_DATABASE_URL) {
+    const { Client } = require('pg');
+    const client = new Client({ connectionString: process.env.TEST_DATABASE_URL });
+    await client.connect();
+    await client.query('CREATE TABLE IF NOT EXISTS records (id text primary key, version bigint not null default 0, ' +
+      'data jsonb not null, updated_at timestamptz default now())');
+    await client.query("DELETE FROM records WHERE id IN ('main', 'banco-azteca')");
+    await client.query("INSERT INTO records (id, version, data) VALUES ('main', 3, $1)", [JSON.stringify(SEED)]);
+    await client.end();
+  } else {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ version: 3, data: SEED }));
+  }
+}
 
 function startServer() {
   return new Promise((resolve, reject) => {
@@ -128,13 +151,13 @@ class TestEventSource {
   }
 }
 
-function openClient(name, { live = false } = {}) {
+function openClient(name, { live = false, page = '/kapital', html = LINE_HTML, script = APP_JS } = {}) {
   const vc = new VirtualConsole();
   vc.on('error', (...args) => consoleErrors.push(name + ': ' + args.join(' ')));
   vc.on('jsdomError', (err) => consoleErrors.push(name + ': ' + (err && err.message)));
   const statuses = [];
-  const dom = new JSDOM(INDEX_HTML, {
-    url: BASE + '/',
+  const dom = new JSDOM(html, {
+    url: BASE + page,
     runScripts: 'outside-only',
     pretendToBeVisual: true,
     virtualConsole: vc
@@ -162,7 +185,7 @@ function openClient(name, { live = false } = {}) {
   } else {
     delete w.EventSource;
   }
-  w.eval(APP_JS);
+  w.eval(script);
   windows.push(dom);
   const doc = w.document;
   const $ = (sel, root) => (root || doc).querySelector(sel);
@@ -219,7 +242,7 @@ async function testAuth() {
   check('app script needs a session', res.status === 302);
 
   res = await api('/login', { auth: false });
-  check('/login is public', res.status === 200 && /Kapital line/.test(await res.text()));
+  check('/login is public', res.status === 200 && /USE OF FUNDS/.test(await res.text()));
 
   res = await api('/login.js', { auth: false });
   check('/login.js is public', res.status === 200);
@@ -253,7 +276,21 @@ async function testAuth() {
   cookie = setCookie.split(';')[0];
 
   res = await api('/');
-  check('page opens with the cookie', res.status === 200 && /id="dispositions"/.test(await res.text()));
+  check('front page opens with the cookie', res.status === 200 && /USE OF FUNDS/.test(await res.text()));
+  res = await api('/kapital');
+  check('Kapital page opens', res.status === 200 && /id="dispositions"/.test(await res.text()));
+  res = await api('/banco-azteca');
+  check('Banco Azteca page opens', res.status === 200 && /id="dispositions"/.test(await res.text()));
+  res = await api('/cash-flow');
+  check('Cash flow placeholder opens', res.status === 200 && /Coming soon/.test(await res.text()));
+  res = await api('/cash-flow', { auth: false });
+  check('Cash flow needs a session', res.status === 302);
+  res = await api('/nope');
+  check('unknown page answers 404', res.status === 404);
+  res = await api('/api/lines/nope/record');
+  check('unknown line answers 404', res.status === 404);
+  res = await api('/api/summary', { auth: false });
+  check('summary needs a session', res.status === 401);
 
   res = await api('/api/record', { auth: false, headers: { cookie: cookie.replace(/.$/, (ch) => (ch === 'a' ? 'b' : 'a')) } });
   check('tampered cookie is rejected', res.status === 401);
@@ -282,7 +319,7 @@ async function testApi() {
   await waitFor(() => streamType, 'event stream');
   check('/api/events is text/event-stream', /^text\/event-stream/.test(streamType), streamType);
 
-  const put = (body) => api('/api/record', {
+  const put = (body) => api('/api/lines/kapital/record', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body)
   });
 
@@ -290,7 +327,7 @@ async function testApi() {
   const saved = await res.json();
   check('PUT with the current version saves', res.status === 200 && saved.version === rec.version + 1, JSON.stringify(saved));
   await waitFor(() => events.join('').includes('event: changed'), 'changed event');
-  check('save broadcasts changed {version}', events.join('').includes('data: {"version":' + saved.version + '}'), events.join(''));
+  check('save broadcasts changed {line, version}', events.join('').includes('data: {"line":"kapital","version":' + saved.version + '}'), events.join(''));
   req.destroy();
 
   res = await put({ baseVersion: rec.version, data: rec.data });
@@ -612,6 +649,115 @@ async function testTwoClients() {
   }
 }
 
+async function testSeeded() {
+  section('Existing Kapital data');
+  let rec = await serverRecord('kapital');
+  check('Kapital reads the original record', rec.version === 3 && rec.data.dispositions[0].id === 'seed1', JSON.stringify(rec).slice(0, 200));
+  const res = await api('/api/record');
+  const old = await res.json();
+  check('old /api/record still reads Kapital', old.version === 3 && old.data.cushion.note === 'Seeded');
+  const k = openClient('seeded');
+  await waitLoaded(k);
+  check('Kapital page shows the existing data', text(k.$('#status')) === 'Record loaded. Changes save automatically.' &&
+    k.$('#available').value === '5,000,000' && k.$$('.disp').length === 1, text(k.$('#status')));
+  check('Kapital page title', text(k.$('#line-title')) === 'Kapital line' && k.doc.title === 'Kapital line, use of funds');
+  check('Kapital headings', k.$$('[data-bank]').every((n) => n.textContent === 'Kapital'));
+  check('back link to all funds', k.$('.crumbs a').getAttribute('href') === '/');
+  k.w.close();
+  // Start the remaining checks from an empty Kapital record.
+  const put = await api('/api/lines/kapital/record', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baseVersion: 3, data: { available: 0, tiie: 6.75, spread: 5, cushion: { amount: 0, note: '' }, settingsUpdated: 0, dispositions: [], deleted: {} } })
+  });
+  check('reset Kapital for the next checks', put.status === 200);
+}
+
+async function testLines() {
+  section('5. Lines');
+  const before = await serverRecord('kapital');
+
+  const az = openClient('azteca', { page: '/banco-azteca' });
+  await waitLoaded(az);
+  check('Banco Azteca starts empty', text(az.$('#status')) === 'Empty record. Changes save automatically.', text(az.$('#status')));
+  check('Banco Azteca title', text(az.$('#line-title')) === 'Banco Azteca line' && az.doc.title === 'Banco Azteca line, use of funds');
+  check('Banco Azteca headings', text(az.$('#dispositions-section h2')) === '2. Dispositions from Banco Azteca' &&
+    text(az.$('#schedule-section h2')) === '3. When we pay Banco Azteca');
+
+  // A live Kapital client must not react to Banco Azteca saves.
+  const kLive = openClient('kapital-live', { live: true });
+  await waitLoaded(kLive);
+  const kGets = () => kLive.statuses.filter((x) => x.startsWith('GET')).length;
+  const kGetsBefore = kGets();
+
+  type(az, az.$('#available'), '9000000');
+  blur(az);
+  az.$('#add-disposition').click();
+  const block = az.$('.disp');
+  setValue(az, az.$('[data-f="date"]', block), '2026-09-23');
+  setValue(az, az.$('[data-f="days"]', block), '120');
+  type(az, az.$('[data-f="amount"]', block), '6000000');
+  check('Banco Azteca facts line', text(az.$('.facts', block)) === 'Back to Banco Azteca on Jan 21, 2027. Interest $235,000. Total to pay $6,235,000.',
+    text(az.$('.facts', block)));
+  check('Banco Azteca drawn label', text(az.$('#big-drawn-label')) === 'drawn from Banco Azteca in 1 disposition');
+  check('Banco Azteca cost sentence', /^Paying Banco Azteca back will cost \$235,000 in interest\./.test(text(az.$('#cost-sentence'))));
+  const row = az.$('.pay', block);
+  type(az, az.$('[data-pf="amount"]', row), '1000000');
+  az.$('[data-pf="revenue"]', row).click();
+  type(az, az.$('[data-pf="back"]', row), '1500000');
+  setValue(az, az.$('[data-pf="backDate"]', row), '2026-12-15');
+  check('arrives before Banco Azteca is due', /Arrives 37 days before Banco Azteca is due\.$/.test(text(az.$('.pay-calc', row))), text(az.$('.pay-calc', row)));
+  blur(az);
+  await waitSaved(az, 'Azteca');
+
+  const azRec = await serverRecord('banco-azteca');
+  check('Banco Azteca saved to its own record', azRec.data.available === 9000000 && azRec.data.dispositions.length === 1);
+  const after = await serverRecord('kapital');
+  check('Kapital record untouched', after.version === before.version && JSON.stringify(after.data) === JSON.stringify(before.data));
+  await sleep(300);
+  check('Kapital page ignores Banco Azteca events', kGets() === kGetsBefore, kLive.statuses.join(','));
+  check('Kapital page still shows its own data', kLive.$$('.disp').length === before.data.dispositions.length && kLive.$('#available').value !== '9,000,000');
+
+  az.$('#copy-summary').click();
+  check('summary names Banco Azteca', az.$('#modal-body').value.split('\n')[0] === 'AROMARIA, Banco Azteca line, ' + fmtToday());
+  az.$('#modal-close').click();
+
+  if (!process.env.TEST_DATABASE_URL) {
+    check('file store keeps Banco Azteca next to the main file', fs.existsSync(path.join(TMP, 'record-banco-azteca.json')));
+  }
+
+  // Front page
+  const res = await api('/api/summary');
+  const sum = await res.json();
+  const k = sum.lines.find((l) => l.id === 'kapital');
+  const a = sum.lines.find((l) => l.id === 'banco-azteca');
+  check('summary lists both lines', sum.lines.length === 2 && k && a && a.name === 'Banco Azteca');
+  check('summary numbers for Banco Azteca', a.available === 9000000 && a.drawn === 6000000 && Math.round(a.interest) === 235000 &&
+    a.left === 3000000 && a.count === 1, JSON.stringify(a));
+
+  const home = openClient('home', { page: '/', html: HOME_HTML, script: HOME_JS, live: true });
+  await waitFor(() => /Open a line/.test(text(home.$('#status'))), 'home loaded');
+  const azRow = home.$('.fund[data-line="banco-azteca"]');
+  check('front page links to each line', home.$('.fund[data-line="kapital"]').getAttribute('href') === '/kapital' &&
+    azRow.getAttribute('href') === '/banco-azteca');
+  check('front page shows Banco Azteca numbers', text(azRow.querySelector('[data-num="available"]')) === '$9,000,000' &&
+    text(azRow.querySelector('[data-num="drawn"]')) === '$6,000,000' && text(azRow.querySelector('[data-num="left"]')) === '$3,000,000');
+  const cash = home.$('.fund[data-line="cash-flow"]');
+  check('Cash flow holds its place, not clickable', cash.tagName === 'DIV' && /Coming soon/.test(text(cash)));
+  check('combined sentence', /^Across both lines we have drawn \$/.test(text(home.$('#combined'))), text(home.$('#combined')));
+
+  // The front page follows live changes.
+  type(az, az.$('#available'), '9500000');
+  blur(az);
+  await waitSaved(az, 'Azteca 2');
+  await waitFor(() => text(azRow.querySelector('[data-num="available"]')) === '$9,500,000', 'front page live update');
+  check('front page updates live', true);
+
+  for (const cl of [az, kLive, home]) {
+    if (cl.dom.sources) cl.dom.sources.forEach((x) => x.close());
+    cl.w.close();
+  }
+}
+
 function fmtToday() {
   const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const d = new Date();
@@ -620,10 +766,11 @@ function fmtToday() {
 
 async function testText() {
   section('Text rules');
-  const files = ['public/index.html', 'public/app.js', 'public/login.html', 'public/login.js', 'README.md', 'server.js'];
+  const files = ['public/index.html', 'public/line.html', 'public/cash-flow.html', 'public/app.js', 'public/home.js',
+    'public/login.html', 'public/login.js', 'README.md', 'server.js'];
   const bad = files.filter((f) => fs.existsSync(path.join(ROOT, f)) && /[\u2013\u2014]/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
   check('no em or en dashes in interface text or docs', bad.length === 0, bad.join(', '));
-  const inline = ['public/index.html', 'public/login.html'].filter((f) => /<script(?![^>]*\bsrc=)[^>]*>/i.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+  const inline = ['public/index.html', 'public/line.html', 'public/cash-flow.html', 'public/login.html'].filter((f) => /<script(?![^>]*\bsrc=)[^>]*>/i.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
   check('no inline scripts', inline.length === 0, inline.join(', '));
 }
 
@@ -642,12 +789,15 @@ async function testRateLimit() {
 async function main() {
   console.log('Starting server on port ' + PORT + ' with ' +
     (process.env.TEST_DATABASE_URL ? 'the PostgreSQL store' : 'the file store at ' + DATA_FILE));
+  await seed();
   await startServer();
   try {
     await testAuth();
+    await testSeeded();
     await testApi();
     await testMath();
     await testTwoClients();
+    await testLines();
     await testText();
     await testRateLimit();
     section('Console');

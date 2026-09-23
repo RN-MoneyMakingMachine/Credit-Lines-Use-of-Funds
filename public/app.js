@@ -11,7 +11,18 @@
   var PULL_MS = 60000;
   var POLL_MS = 15000;
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  var COLLAPSE_KEY = 'kapital.collapsed';
+
+  // Which credit line this page is for, from the address (/kapital, /banco-azteca).
+  var LINES = {
+    kapital: 'Kapital',
+    'banco-azteca': 'Banco Azteca'
+  };
+  var LINE = (window.location.pathname.replace(/^\/+|\/+$/g, '') || 'kapital').toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(LINES, LINE)) LINE = 'kapital';
+  var BANK = LINES[LINE];
+  var RECORD_URL = '/api/lines/' + LINE + '/record';
+  // Kapital keeps the key it always had so nobody's collapsed state resets.
+  var COLLAPSE_KEY = LINE === 'kapital' ? 'kapital.collapsed' : 'kapital.collapsed.' + LINE;
 
   // ---------- State ----------
 
@@ -479,7 +490,7 @@
 
     var interest = interestOf(d.amount, d.days, annual);
     block.querySelector('.facts').textContent =
-      'Back to Kapital on ' + fmtDate(maturity(d)) + '. Interest ' + money(interest) +
+      'Back to ' + BANK + ' on ' + fmtDate(maturity(d)) + '. Interest ' + money(interest) +
       '. Total to pay ' + money(d.amount + interest) + '.';
 
     var assigned = 0;
@@ -538,11 +549,11 @@
     if (p.revenue && parseDate(p.backDate) !== null) {
       var diff = Math.round((due - parseDate(p.backDate)) / DAY_MS);
       var sep = nodes.length ? ' ' : '';
-      if (diff > 0) text(sep + 'Arrives ' + plural(diff, 'day', 'days') + ' before Kapital is due.');
+      if (diff > 0) text(sep + 'Arrives ' + plural(diff, 'day', 'days') + ' before ' + BANK + ' is due.');
       else if (diff < 0) {
         if (sep) text(sep);
-        nodes.push(el('strong', { class: 'bad', text: 'Arrives ' + plural(-diff, 'day', 'days') + ' after Kapital is due.' }));
-      } else text(sep + 'Arrives the day Kapital is due.');
+        nodes.push(el('strong', { class: 'bad', text: 'Arrives ' + plural(-diff, 'day', 'days') + ' after ' + BANK + ' is due.' }));
+      } else text(sep + 'Arrives the day ' + BANK + ' is due.');
     }
     if (p.paid) text((nodes.length ? ' ' : '') + 'Paid.');
     target.replaceChildren.apply(target, nodes);
@@ -584,7 +595,7 @@
     // Big numbers
     $('big-cushion').textContent = money(record.cushion.amount);
     $('big-drawn').textContent = money(t.drawn);
-    $('big-drawn-label').textContent = 'drawn from Kapital in ' + plural(t.count, 'disposition', 'dispositions');
+    $('big-drawn-label').textContent = 'drawn from ' + BANK + ' in ' + plural(t.count, 'disposition', 'dispositions');
     $('big-left').textContent = money(t.left);
     $('big-left').classList.toggle('bad', t.left < 0);
     var over = $('over');
@@ -598,7 +609,7 @@
 
     // Cost sentence
     $('cost-sentence').textContent = t.drawn > 0
-      ? 'Paying Kapital back will cost ' + money(t.interest) + ' in interest. The ' + money(t.drawn) +
+      ? 'Paying ' + BANK + ' back will cost ' + money(t.interest) + ' in interest. The ' + money(t.drawn) +
         ' we draw becomes ' + money(t.drawn + t.interest) + ' by the time it is repaid.'
       : 'Nothing drawn yet. Every peso drawn costs ' + pct(annual * 100 / 12) + ' a month until it is paid back.';
 
@@ -1058,7 +1069,7 @@
     inFlight = true;
 
     var payload = buildPayload();
-    fetch('/api/record', {
+    fetch(RECORD_URL, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -1115,7 +1126,7 @@
   // ---------- Loading and live updates ----------
 
   function getRecord() {
-    return fetch('/api/record', {
+    return fetch(RECORD_URL, {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }
     }).then(function (res) {
@@ -1157,7 +1168,11 @@
       var source = new window.EventSource('/api/events');
       source.addEventListener('changed', function (e) {
         var v;
-        try { v = JSON.parse(e.data).version; } catch (_) { return; }
+        try {
+          var msg = JSON.parse(e.data);
+          if (msg.line && msg.line !== LINE) return;
+          v = msg.version;
+        } catch (_) { return; }
         if (v === version) return;
         if (inFlight) {
           missedChange = true;
@@ -1228,7 +1243,7 @@
     var t = totals(record);
     var annual = t.annual;
     var lines = [];
-    lines.push('AROMARIA, Kapital line, ' + fmtToday());
+    lines.push('AROMARIA, ' + BANK + ' line, ' + fmtToday());
     lines.push(
       'Available today ' + money(record.available) + '. Cushion ' + money(record.cushion.amount) +
       (record.cushion.note.trim() ? ' (' + record.cushion.note.trim() + ')' : '') + '. Drawn ' + money(t.drawn) +
@@ -1237,7 +1252,7 @@
     );
     lines.push(
       'TIIE ' + record.tiie + '% plus spread ' + record.spread + '%, ' + pct(annual * 100) + ' a year, ' +
-      pct(annual * 100 / 12) + ' a month. Interest to Kapital ' + money(t.interest) + '. Total to repay ' +
+      pct(annual * 100 / 12) + ' a month. Interest to ' + BANK + ' ' + money(t.interest) + '. Total to repay ' +
       money(t.drawn + t.interest) + '.'
     );
     var assigned = t.revenue + t.obligations;
@@ -1259,7 +1274,7 @@
       lines.push('');
       lines.push(
         dispName(d) + ', ' + money(d.amount) + ' drawn' + (drawnOn !== null ? ' on ' + fmtDate(drawnOn) : '') +
-        ' for ' + d.days + ' days. Back to Kapital on ' + fmtDate(due) + '. Interest ' + money(interest) +
+        ' for ' + d.days + ' days. Back to ' + BANK + ' on ' + fmtDate(due) + '. Interest ' + money(interest) +
         '. Total to pay ' + money(d.amount + interest) + '.' + (d.repaid ? ' Repaid.' : '')
       );
       if (!d.payments.length) lines.push('No payments yet.');
@@ -1277,9 +1292,9 @@
           }
           if (backT !== null) {
             var days = Math.round((due - backT) / DAY_MS);
-            line += days > 0 ? ' Arrives ' + plural(days, 'day', 'days') + ' before Kapital is due.'
-              : days < 0 ? ' Arrives ' + plural(-days, 'day', 'days') + ' after Kapital is due.'
-                : ' Arrives the day Kapital is due.';
+            line += days > 0 ? ' Arrives ' + plural(days, 'day', 'days') + ' before ' + BANK + ' is due.'
+              : days < 0 ? ' Arrives ' + plural(-days, 'day', 'days') + ' after ' + BANK + ' is due.'
+                : ' Arrives the day ' + BANK + ' is due.';
           }
         } else {
           line += ' Obligation.';
@@ -1357,7 +1372,7 @@
     }
     if (isObject(parsed) && isObject(parsed.data) && !Array.isArray(parsed.dispositions)) parsed = parsed.data;
     if (!validShape(parsed)) {
-      modalMessage('That does not look like a Kapital line backup.');
+      modalMessage('That does not look like a credit line backup.');
       return;
     }
     replaceRecord(parsed);
@@ -1443,7 +1458,16 @@
     });
   }
 
+  function setupLine() {
+    document.title = BANK + ' line, use of funds';
+    $('line-title').textContent = BANK + ' line';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-bank]'), function (n) {
+      n.textContent = BANK;
+    });
+  }
+
   function start() {
+    setupLine();
     bind();
     load();
   }

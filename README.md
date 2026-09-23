@@ -1,8 +1,18 @@
-# Kapital line
+# Use of funds, AROMARIA
 
-AROMARIA has a revolving credit line with Kapital bank. Each draw is a disposition that is repaid within 30 to 180 days at TIIE plus a spread. This page is where the family organizes that money in working sessions: what stays as a cushion, what each disposition is split into, what each payment really costs once interest is added, which payments bring money back and when, and when Kapital gets paid.
+Where AROMARIA's money comes from, what it goes to, and what it really costs to pay it back. The family uses it in working sessions.
 
-Everyone who has the access code sees and edits one shared record. Changes save automatically and show up on the other screens within a second.
+The front page lists each source of funds:
+
+| Source | Address | What it is |
+| --- | --- | --- |
+| Kapital | `/kapital` | Revolving credit line. Each draw is a disposition repaid within 30 to 180 days at TIIE plus a spread. |
+| Banco Azteca | `/banco-azteca` | Same tool as Kapital, with its own separate record. |
+| Cash flow | `/cash-flow` | Place held for the next tool. Coming soon. |
+
+On each credit line page the family decides what stays as a cushion, what each disposition is split into, what each payment really costs once interest is added, which payments bring money back and when, and when the bank gets paid.
+
+Everyone who has the access code sees and edits the same records. Changes save automatically and show up on the other screens within a second.
 
 ## How the numbers work
 
@@ -26,7 +36,7 @@ export $(grep -v '^#' .env | xargs)
 npm start
 ```
 
-Open http://localhost:3000 and type the access code.
+Open http://localhost:3000, type the access code, and pick a line.
 
 Without `DATABASE_URL` the record is kept in `./data/record.json`. That file is ignored by git.
 
@@ -60,7 +70,7 @@ The server stops with a clear message if `ACCESS_CODE` or `SESSION_SECRET` is mi
    * `DATABASE_URL` with the value `${{Postgres.DATABASE_URL}}` (Railway fills it in from the database service).
 5. Go to Settings, Networking, and click Generate Domain. That is the address to share.
 6. Optional: in Settings, Deploy, set the healthcheck path to `/healthz`.
-7. Moving data from an older copy of the page: open the old page, click Backup, then Copy. Open the new page, click Restore, paste, and click Restore. The restored record replaces what is there for everyone.
+7. Moving data from an older copy of the page: open the old page, click Backup, then Copy. Open the matching line on the new page (for example Kapital), click Restore, paste, and click Restore. The restored record replaces what is there for everyone.
 
 ### Without a database
 
@@ -70,6 +80,21 @@ The app can keep the record in a JSON file instead. On Railway the file system i
 2. In the app service Variables, set `DATA_FILE` to `/data/record.json` and do not set `DATABASE_URL`.
 
 PostgreSQL is the better choice. It keeps backups and survives moving the service.
+
+## Records
+
+Each credit line has its own record, a row in the `records` table (or a JSON file when there is no database):
+
+| Line | Record id | File store |
+| --- | --- | --- |
+| Kapital | `main` (the original record, so nothing was migrated) | `DATA_FILE` |
+| Banco Azteca | `banco-azteca` | `record-banco-azteca.json` next to `DATA_FILE` |
+
+A record is created empty the first time its page is opened. Backup and Restore work per line: a backup from the Kapital page restores into whichever line page you paste it on.
+
+To add another credit line, add it to `LINES` in `server.js` and in `public/app.js`, and add a row to `public/index.html`.
+
+API (all behind the session): `GET` and `PUT /api/lines/:line/record`, `GET /api/summary` for the front page, and `GET /api/events` for live updates (`changed {line, version}`). `/api/record` still answers for Kapital so an older open tab keeps saving.
 
 ## How saving works
 
@@ -82,8 +107,11 @@ PostgreSQL is the better choice. It keeps backups and survives moving the servic
 
 ## Files
 
-* `server.js` Express server, login, security headers, record API, live events.
-* `db.js` PostgreSQL store and JSON file store with the same interface.
-* `public/index.html`, `public/app.js`, `public/styles.css` The page.
+* `server.js` Express server, login, security headers, lines, record API, summary, live events.
+* `db.js` PostgreSQL store and JSON file store with the same interface, one record per id.
+* `public/index.html`, `public/home.js` The front page with every source of funds.
+* `public/line.html`, `public/app.js` The credit line page (Kapital, Banco Azteca).
+* `public/cash-flow.html` Placeholder for the cash flow tool.
+* `public/styles.css` Styles for every page.
 * `public/login.html`, `public/login.js` The access code page.
 * `test/run.js` End to end checks with jsdom.
