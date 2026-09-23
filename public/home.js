@@ -16,6 +16,7 @@
 
   function toLogin() { window.location.href = '/login'; }
 
+
   function render(data) {
     var drawn = 0;
     var interest = 0;
@@ -41,10 +42,15 @@
   }
 
   var loading = false;
+  var again = false;   // a change arrived while loading: load once more afterwards
 
   function load() {
-    if (loading) return;
+    if (loading) {
+      again = true;
+      return;
+    }
     loading = true;
+    again = false;
     fetch('/api/summary', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
       .then(function (res) {
         if (res.status === 401) {
@@ -59,7 +65,10 @@
         $('status').textContent = 'No connection to the record. Retrying.';
         $('status').classList.add('bad');
       })
-      .then(function () { loading = false; });
+      .then(function () {
+        loading = false;
+        if (again) load();
+      });
   }
 
   function start() {
@@ -74,6 +83,8 @@
       source.addEventListener('changed', load);
     }
     setInterval(load, PULL_MS);
+    // Coming back with the Back button can show a cached page: refresh its numbers.
+    window.addEventListener('pageshow', function (e) { if (e.persisted) load(); });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

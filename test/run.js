@@ -87,6 +87,8 @@ async function seed() {
     await client.query('CREATE TABLE IF NOT EXISTS records (id text primary key, version bigint not null default 0, ' +
       'data jsonb not null, updated_at timestamptz default now())');
     await client.query("DELETE FROM records WHERE id IN ('main', 'banco-azteca')");
+    // Test database only: start with no saved versions.
+    await client.query('DROP TABLE IF EXISTS record_history');
     await client.query("INSERT INTO records (id, version, data) VALUES ('main', 3, $1)", [JSON.stringify(SEED)]);
     await client.end();
   } else {
@@ -285,6 +287,13 @@ async function testAuth() {
   check('Cash flow placeholder opens', res.status === 200 && /Coming soon/.test(await res.text()));
   res = await api('/cash-flow', { auth: false });
   check('Cash flow needs a session', res.status === 302);
+  res = await api('/banco-azteca', { auth: false });
+  check('signing in returns to the page asked for', res.status === 302 && res.headers.get('location') === '/login?next=%2Fbanco-azteca',
+    res.headers.get('location'));
+  res = await api('/login?next=%2Fbanco-azteca');
+  check('signed in, /login goes on to that page', res.status === 302 && res.headers.get('location') === '/banco-azteca');
+  res = await api('/login?next=%2F%2Fevil.example');
+  check('login never redirects off the site', res.status === 302 && res.headers.get('location') === '/');
   res = await api('/nope');
   check('unknown page answers 404', res.status === 404);
   res = await api('/api/lines/nope/record');
@@ -500,21 +509,81 @@ async function testMath() {
   a.$('#modal-close').click();
   check('modal closes', a.$('#modal').hidden);
 
-  a.$('#backup').click();
-  const backup = JSON.parse(a.$('#modal-body').value);
-  check('backup is the full record', backup.dispositions.length === 2 && backup.cushion.amount === 2000000);
-  a.$('#modal-close').click();
+  // Downloads
+  check('download links point at this line', a.$('#download-json').getAttribute('href') === '/api/lines/kapital/export.json' &&
+    a.$('#download-csv').getAttribute('href') === '/api/lines/kapital/export.csv' && a.$('#download-json').hasAttribute('download'));
+  let res = await api('/api/lines/kapital/export.json');
+  const exported = await res.json();
+  check('backup file downloads as an attachment', /attachment; filename="aromaria-kapital-\d{4}-\d{2}-\d{2}\.json"/.test(res.headers.get('content-disposition') || ''),
+    res.headers.get('content-disposition'));
+  check('backup file holds the full record', exported.line === 'kapital' && exported.data.dispositions.length === 2 &&
+    exported.data.cushion.amount === 2000000);
+  res = await api('/api/lines/kapital/export.csv');
+  const csvBytes = Buffer.from(await res.arrayBuffer());
+  const csv = csvBytes.toString('utf8').replace(/^\uFEFF/, '');
+  const csvLines = csv.trim().split('\r\n');
+  // The byte order mark tells Excel the file is UTF-8, so accents show correctly.
+  check('payments file downloads as CSV for Excel', /text\/csv/.test(res.headers.get('content-type') || '') &&
+    csvBytes[0] === 0xEF && csvBytes[1] === 0xBB && csvBytes[2] === 0xBF &&
+    /filename="aromaria-kapital-payments-/.test(res.headers.get('content-disposition') || ''));
+  check('CSV header', csvLines[0].startsWith('Disposition,Drawn on,Days,Back to Kapital on,Disposition amount'), csvLines[0]);
+  check('CSV payment row with true cost and net', csvLines.some((l) => l.startsWith('Disposition 1,2026-09-23,120,2027-01-21,6000000,235000,Yes,Coffee beans,1000000,Adds revenue,1039167,39167,1500000,2026-12-15,460833,Yes,')),
+    csvLines.join('\n'));
+  check('CSV text is quoted', csvLines.some((l) => l.endsWith(',The roaster stops for a month')), csvLines.join('\n'));
 
-  // Remove a payment and a disposition
+  // A payment named like a formula must not run as one in Excel.
+  const row2b = a.$$('.pay', block)[1];
+  type(a, a.$('[data-pf="name"]', row2b), '=HYPERLINK("x")');
+  blur(a);
+  await waitSaved(a, 'formula name');
+  res = await api('/api/lines/kapital/export.csv');
+  check('CSV never starts a cell with a formula', (await res.text()).includes(`"'=HYPERLINK(""x"")"`));
+
+  // History: removing a payment keeps the state before it.
+  await waitFor(() => a.$('#history table'), 'history list');
   a.$('[data-act="remove-pay"]', a.$$('.pay', block)[1]).click();
   check('remove payment', a.$$('.pay', block).length === 1);
+  await waitSaved(a, 'remove payment');
+  res = await api('/api/lines/kapital/history');
+  let hist = await res.json();
+  check('removal keeps a saved version first', hist.entries[0].reason === 'removal' && hist.entries[0].summary.count === 2, JSON.stringify(hist.entries[0]));
+  await waitFor(() => /Before something was removed/.test(text(a.$('#history'))), 'history shows removal');
+  check('saved versions list shows the removal', !/null|undefined/.test(text(a.$('#history'))), text(a.$('#history')));
 
   a.$('#clear').click();
   await waitSaved(a, 'clear');
   const cleared = await serverRecord();
-  check('clear everything empties the record', cleared.data.dispositions.length === 0 && cleared.data.available === 0 &&
+  check('start over empties the record', cleared.data.dispositions.length === 0 && cleared.data.available === 0 &&
     Object.keys(cleared.data.deleted).length === 2, JSON.stringify(cleared.data));
-  check('clear everything empties the screen', a.$$('.disp').length === 0 && a.$('#available').value === '');
+  res = await api('/api/lines/kapital/history');
+  hist = await res.json();
+  check('start over keeps the previous version', hist.entries[0].reason === 'clear' && hist.entries[0].summary.drawn === 16000000, JSON.stringify(hist.entries[0]));
+  res = await api('/api/lines/kapital/history/' + hist.entries[0].hid);
+  const kept = await res.json();
+  check('saved version holds the full data', kept.data.dispositions.length === 2 && kept.data.available === 17300000);
+  res = await api('/api/lines/kapital/history/999999');
+  check('unknown saved version answers 404', res.status === 404);
+  res = await api('/api/lines/banco-azteca/history');
+  check('history is kept per line', (await res.json()).entries.length === 0);
+
+  // Bring it back from the list.
+  await waitFor(() => /Before starting over/.test(text(a.$('#history'))), 'history shows start over');
+  a.$('#history button[data-act="view"]').click();
+  await waitFor(() => !a.$('#modal').hidden, 'view modal');
+  check('view shows that version as text', /as it was on/.test(a.$('#modal-body').value) && /Coffee beans/.test(a.$('#modal-body').value),
+    a.$('#modal-body').value.slice(0, 200));
+  a.$('#modal-primary').click();
+  await waitFor(() => a.$$('.disp').length === 2, 'brought back');
+  await waitSaved(a, 'bring back');
+  const back = await serverRecord();
+  check('bring back restores it for everyone', back.data.dispositions.length === 2 && back.data.available === 17300000);
+  res = await api('/api/lines/kapital/history');
+  hist = await res.json();
+  check('bringing back keeps the emptied version too', hist.entries[0].reason === 'restore' && hist.entries[0].summary.count === 0);
+
+  a.$('#clear').click();
+  await waitSaved(a, 'clear again');
+  check('start over empties the screen', a.$$('.disp').length === 0 && a.$('#available').value === '');
   a.w.close();
 }
 
@@ -609,6 +678,8 @@ async function testTwoClients() {
   check('restore replaces the record', rec.data.available === 12000000 && rec.data.dispositions.length === 1 &&
     rec.data.dispositions[0].id === 'restored1' && rec.data.dispositions[0].updated > now, JSON.stringify(rec.data).slice(0, 400));
   check('old payment gets defaults', rec.data.dispositions[0].payments[0].back === 0 && rec.data.dispositions[0].payments[0].backDate === '');
+  const afterRestore = await (await api('/api/lines/kapital/history')).json();
+  check('restore keeps the previous version', afterRestore.entries[0].reason === 'restore', JSON.stringify(afterRestore.entries[0]));
 
   await waitFor(() => c.$('.disp[data-id="restored1"]'), 'C live update after restore');
   check('live client shows the restored record', c.$('#available').value === '12,000,000' && c.$$('.disp').length === 1);
@@ -656,6 +727,10 @@ async function testSeeded() {
   const res = await api('/api/record');
   const old = await res.json();
   check('old /api/record still reads Kapital', old.version === 3 && old.data.cushion.note === 'Seeded');
+  const stale = await api('/api/record', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseVersion: 1, data: SEED })
+  });
+  check('old /api/record still saves to Kapital with version checks', stale.status === 409 && (await stale.json()).version === 3);
   const k = openClient('seeded');
   await waitLoaded(k);
   check('Kapital page shows the existing data', text(k.$('#status')) === 'Record loaded. Changes save automatically.' &&
@@ -733,6 +808,10 @@ async function testLines() {
   check('summary lists both lines', sum.lines.length === 2 && k && a && a.name === 'Banco Azteca');
   check('summary numbers for Banco Azteca', a.available === 9000000 && a.drawn === 6000000 && Math.round(a.interest) === 235000 &&
     a.left === 3000000 && a.count === 1, JSON.stringify(a));
+  const kRec = (await serverRecord('kapital')).data;
+  const kDrawn = kRec.dispositions.reduce((t, x) => t + x.amount, 0);
+  check('summary numbers for Kapital include the cushion', k.available === kRec.available && k.cushion === kRec.cushion.amount &&
+    k.drawn === kDrawn && k.left === kRec.available - kRec.cushion.amount - kDrawn, JSON.stringify(k));
 
   const home = openClient('home', { page: '/', html: HOME_HTML, script: HOME_JS, live: true });
   await waitFor(() => /Open a line/.test(text(home.$('#status'))), 'home loaded');
@@ -743,7 +822,13 @@ async function testLines() {
     text(azRow.querySelector('[data-num="drawn"]')) === '$6,000,000' && text(azRow.querySelector('[data-num="left"]')) === '$3,000,000');
   const cash = home.$('.fund[data-line="cash-flow"]');
   check('Cash flow holds its place, not clickable', cash.tagName === 'DIV' && /Coming soon/.test(text(cash)));
-  check('combined sentence', /^Across both lines we have drawn \$/.test(text(home.$('#combined'))), text(home.$('#combined')));
+  const fmt = (n) => (Math.round(n) < 0 ? '-$' : '$') + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const allDrawn = k.drawn + a.drawn;
+  const allInterest = k.interest + a.interest;
+  const allCount = k.count + a.count;
+  check('combined sentence', text(home.$('#combined')) === 'Across both lines we have drawn ' + fmt(allDrawn) + ' in ' + allCount +
+    (allCount === 1 ? ' disposition' : ' dispositions') + '. Paying it back will cost ' + fmt(allInterest) + ' in interest, ' +
+    fmt(allDrawn + allInterest) + ' in total.', text(home.$('#combined')));
 
   // The front page follows live changes.
   type(az, az.$('#available'), '9500000');
@@ -751,6 +836,26 @@ async function testLines() {
   await waitSaved(az, 'Azteca 2');
   await waitFor(() => text(azRow.querySelector('[data-num="available"]')) === '$9,500,000', 'front page live update');
   check('front page updates live', true);
+
+  // Restore Banco Azteca from a downloaded backup file.
+  const file = await (await api('/api/lines/kapital/export.json')).text();
+  az.$('#restore').click();
+  check('restore offers a file picker', !az.$('#modal-file-row').hidden);
+  Object.defineProperty(az.$('#modal-file'), 'files', { value: [new az.w.File([file], 'backup.json', { type: 'application/json' })], configurable: true });
+  fire(az, az.$('#modal-file'), 'change');
+  await waitFor(() => /Backup file loaded/.test(text(az.$('#modal-error'))), 'file read');
+  let asked = '';
+  az.w.confirm = (m) => { asked = m; return true; };
+  az.$('#modal-primary').click();
+  check('restoring a backup from the other line warns first', /^This backup is from Kapital, not Banco Azteca\./.test(asked), asked);
+  await waitSaved(az, 'Azteca file restore');
+  const fromFile = await serverRecord('banco-azteca');
+  const kapitalNow = await serverRecord('kapital');
+  check('restore from a file replaces the line', fromFile.data.available === kapitalNow.data.available &&
+    fromFile.data.dispositions.length === kapitalNow.data.dispositions.length, JSON.stringify(fromFile.data).slice(0, 200));
+  const azHist = await (await api('/api/lines/banco-azteca/history')).json();
+  check('file restore keeps the previous Banco Azteca version', azHist.entries[0].reason === 'restore' && azHist.entries[0].summary.available === 9500000,
+    JSON.stringify(azHist.entries[0]));
 
   for (const cl of [az, kLive, home]) {
     if (cl.dom.sources) cl.dom.sources.forEach((x) => x.close());

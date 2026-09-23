@@ -10,7 +10,10 @@
 </head>
 <body>
   <main class="page">
-    <nav class="crumbs"><a href="/" class="back">All funds</a></nav>
+    <nav class="crumbs">
+      <a href="/" class="back">All funds</a>
+      <button type="button" class="link quiet" id="signout">Sign out</button>
+    </nav>
     <header class="intro">
       <p class="eyebrow">AROMARIA, use of funds</p>
       <h1 id="line-title">Credit line</h1>
@@ -97,12 +100,20 @@
       <div id="schedule"></div>
     </section>
 
-    <section class="actions">
-      <button type="button" class="button" id="copy-summary">Copy summary</button>
-      <button type="button" class="button" id="backup">Backup</button>
-      <button type="button" class="button" id="restore">Restore</button>
-      <button type="button" class="button danger" id="clear">Clear everything</button>
-      <button type="button" class="button" id="signout">Sign out</button>
+    <section class="block" id="versions-section">
+      <h2>4. Saved versions</h2>
+      <p class="muted">Every change is saved to the database as you type. On top of that, a copy of this line is kept at least every 10 minutes while people work, and always before a disposition or payment is removed, before a restore, and before starting over. Any copy can be brought back.</p>
+      <div class="record-actions">
+        <button type="button" class="button" id="copy-summary">Copy summary</button>
+        <a class="button" id="download-json" href="#" download>Download backup</a>
+        <a class="button" id="download-csv" href="#" download>Download payments for Excel</a>
+        <button type="button" class="button" id="restore">Restore from a backup</button>
+      </div>
+      <div id="history"><p class="muted">Loading saved versions.</p></div>
+      <p class="start-over">
+        <button type="button" class="link danger" id="clear">Start this line over</button>
+        <span class="muted">Empties this line for everyone. What is there now stays in Saved versions.</span>
+      </p>
     </section>
   </main>
 
@@ -110,6 +121,9 @@
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title"></h2>
       <p class="muted" id="modal-text"></p>
+      <p class="modal-file" id="modal-file-row" hidden>
+        <input type="file" id="modal-file" accept=".json,application/json">
+      </p>
       <textarea id="modal-body" spellcheck="false"></textarea>
       <p class="error-line" id="modal-error" role="alert"></p>
       <div class="modal-actions">

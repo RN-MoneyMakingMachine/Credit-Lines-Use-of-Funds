@@ -36,6 +36,9 @@
   var retryTimer = null;      // retry after a network failure
   var pulling = false;
   var missedChange = false;   // a change event arrived while saving
+  var pendingReason = '';     // 'restore' or 'clear' until the replacing save reaches the server
+  var reasonSeq = 0;          // bumps on every restore or clear, so an older save does not clear a newer reason
+  var historyBase = '/api/lines/' + LINE + '/history';
 
   var pendingSettings = null;       // newer remote settings held while the top fields have focus
   var pendingDisp = new Map();      // id -> newer remote disposition (or {deleted: ts}) held while its block has focus
@@ -1058,7 +1061,7 @@
   }
 
   function toLogin() {
-    window.location.href = '/login';
+    window.location.href = '/login?next=' + encodeURIComponent('/' + LINE);
   }
 
   function flush() {
@@ -1069,11 +1072,15 @@
     inFlight = true;
 
     var payload = buildPayload();
+    var sentReason = pendingReason;
+    var sentSeq = reasonSeq;
     fetch(RECORD_URL, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ baseVersion: version, data: payload })
+      body: JSON.stringify(sentReason
+        ? { baseVersion: version, data: payload, reason: sentReason }
+        : { baseVersion: version, data: payload })
     }).then(function (res) {
       if (res.status === 401) {
         inFlight = false;
@@ -1097,6 +1104,8 @@
       return res.json().then(function (j) {
         version = j.version;
         inFlight = false;
+        if (sentReason && reasonSeq === sentSeq) pendingReason = '';
+        if (j.snapshot) scheduleHistory();
         afterSaved();
       });
     }).catch(function () {
@@ -1158,6 +1167,7 @@
         dirty = true;
         if (!saveTimer) flush();
       }
+      scheduleHistory();
     }).catch(function () { /* the next pull retries */ }).then(function () {
       pulling = false;
     });
@@ -1199,6 +1209,7 @@
         ? 'Empty record. Changes save automatically.'
         : 'Record loaded. Changes save automatically.');
       connectLive();
+      loadHistory(false);
     }).catch(function () {
       setStatus('Could not load the record. Retrying.', true);
       setTimeout(load, RETRY_DELAY);
@@ -1207,7 +1218,7 @@
 
   // ---------- Replace (restore and clear) ----------
 
-  function replaceRecord(data) {
+  function replaceRecord(data, reason) {
     var now = stamp();
     var next = normalize(data);
     var keep = {};
@@ -1234,24 +1245,28 @@
     renderAllBlocks();
     if (searchQuery()) applySearch();
     refreshAll();
+    pendingReason = reason || 'restore';
+    reasonSeq++;
     markDirty();
   }
 
   // ---------- Summary ----------
 
-  function buildSummary() {
-    var t = totals(record);
+  // Plain text summary of the current record or of a saved version.
+  function buildSummary(r, when) {
+    r = r || record;
+    var t = totals(r);
     var annual = t.annual;
     var lines = [];
-    lines.push('AROMARIA, ' + BANK + ' line, ' + fmtToday());
+    lines.push('AROMARIA, ' + BANK + ' line, ' + (when || fmtToday()));
     lines.push(
-      'Available today ' + money(record.available) + '. Cushion ' + money(record.cushion.amount) +
-      (record.cushion.note.trim() ? ' (' + record.cushion.note.trim() + ')' : '') + '. Drawn ' + money(t.drawn) +
+      'Available today ' + money(r.available) + '. Cushion ' + money(r.cushion.amount) +
+      (r.cushion.note.trim() ? ' (' + r.cushion.note.trim() + ')' : '') + '. Drawn ' + money(t.drawn) +
       ' in ' + plural(t.count, 'disposition', 'dispositions') + '. Still available ' + money(t.left) + '.' +
       (t.left < 0 ? ' Over the available line by ' + money(-t.left) + '.' : '')
     );
     lines.push(
-      'TIIE ' + record.tiie + '% plus spread ' + record.spread + '%, ' + pct(annual * 100) + ' a year, ' +
+      'TIIE ' + r.tiie + '% plus spread ' + r.spread + '%, ' + pct(annual * 100) + ' a year, ' +
       pct(annual * 100 / 12) + ' a month. Interest to ' + BANK + ' ' + money(t.interest) + '. Total to repay ' +
       money(t.drawn + t.interest) + '.'
     );
@@ -1267,13 +1282,13 @@
       lines.push(s);
     }
 
-    record.dispositions.forEach(function (d) {
+    r.dispositions.forEach(function (d) {
       var interest = interestOf(d.amount, d.days, annual);
       var due = maturity(d);
       var drawnOn = parseDate(d.date);
       lines.push('');
       lines.push(
-        dispName(d) + ', ' + money(d.amount) + ' drawn' + (drawnOn !== null ? ' on ' + fmtDate(drawnOn) : '') +
+        (d.name.trim() || 'Disposition ' + (r.dispositions.indexOf(d) + 1)) + ', ' + money(d.amount) + ' drawn' + (drawnOn !== null ? ' on ' + fmtDate(drawnOn) : '') +
         ' for ' + d.days + ' days. Back to ' + BANK + ' on ' + fmtDate(due) + '. Interest ' + money(interest) +
         '. Total to pay ' + money(d.amount + interest) + '.' + (d.repaid ? ' Repaid.' : '')
       );
@@ -1308,6 +1323,136 @@
     return lines.join('\n');
   }
 
+  // ---------- Saved versions (history kept by the server) ----------
+
+  var HISTORY_PAGE = 10;
+  var REASONS = {
+    '': 'Regular copy',
+    removal: 'Before something was removed',
+    restore: 'Before a restore',
+    clear: 'Before starting over'
+  };
+  var historyEntries = [];
+  var historyMore = false;
+  var historyTimer = null;
+  var historyLoading = false;
+
+  function getJSON(url) {
+    return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (res) {
+      if (res.status === 401) {
+        toLogin();
+        return null;
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
+  }
+
+  function scheduleHistory() {
+    if (historyTimer) clearTimeout(historyTimer);
+    historyTimer = setTimeout(function () {
+      historyTimer = null;
+      loadHistory(false);
+    }, 1200);
+  }
+
+  function loadHistory(older) {
+    if (historyLoading) return Promise.resolve();
+    historyLoading = true;
+    var limit = older ? HISTORY_PAGE : Math.min(100, Math.max(HISTORY_PAGE, historyEntries.length));
+    var url = historyBase + '?limit=' + limit;
+    if (older && historyEntries.length) url += '&before=' + historyEntries[historyEntries.length - 1].hid;
+    return getJSON(url).then(function (j) {
+      if (!j) return;
+      historyEntries = older ? historyEntries.concat(j.entries) : j.entries;
+      historyMore = !!j.more;
+      renderHistory();
+    }).catch(function () {
+      if (!historyEntries.length) {
+        $('history').replaceChildren(el('p', { class: 'muted', text: 'Saved versions could not be loaded right now. They are still kept on the server.' }));
+      }
+    }).then(function () {
+      historyLoading = false;
+    });
+  }
+
+  function fmtWhen(e) {
+    var t = e.savedAt || e.createdAt;
+    var label = fmtSaved(t);
+    var d = new Date(t);
+    return d.getFullYear() === new Date().getFullYear() ? label : label.replace(',', ' ' + d.getFullYear() + ',');
+  }
+
+  function describe(sum) {
+    sum = sum || {};
+    return plural(sum.count || 0, 'disposition', 'dispositions') + ', ' + money(sum.drawn || 0) + ' drawn, ' +
+      money(sum.available || 0) + ' available';
+  }
+
+  function renderHistory() {
+    var wrap = $('history');
+    if (!historyEntries.length) {
+      wrap.replaceChildren(el('p', { class: 'muted', text: 'No saved versions yet. Copies appear here once this line has been edited.' }));
+      return;
+    }
+    var rows = historyEntries.map(function (e) {
+      return el('tr', {}, [
+        el('td', { text: fmtWhen(e) }),
+        el('td', { text: describe(e.summary) }),
+        el('td', { class: 'muted', text: REASONS[e.reason] || REASONS[''] }),
+        el('td', { class: 'row-actions' }, [
+          el('button', { type: 'button', class: 'link', 'data-act': 'view', 'data-hid': String(e.hid), text: 'View' }),
+          el('button', { type: 'button', class: 'link', 'data-act': 'bring', 'data-hid': String(e.hid), text: 'Bring back' })
+        ])
+      ]);
+    });
+    var table = el('table', { class: 'schedule history-table' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'As it was on' }), el('th', { text: 'What it held' }), el('th', { text: 'Kept' }), el('th')
+      ])]),
+      el('tbody', {}, rows)
+    ]);
+    var parts = [el('div', { class: 'table-scroll' }, [table])];
+    if (historyMore) parts.push(el('button', { type: 'button', class: 'link history-more', 'data-act': 'older', text: 'Show older versions' }));
+    wrap.replaceChildren.apply(wrap, parts);
+  }
+
+  function bringBack(entry, data) {
+    if (!window.confirm('Bring back the version from ' + fmtWhen(entry) + '? It replaces this line for everyone. ' +
+      'What is there now is kept in Saved versions first.')) return;
+    closeModal();
+    replaceRecord(data, 'restore');
+  }
+
+  function onHistoryClick(e) {
+    var btn = e.target.closest('button[data-act]');
+    if (!btn || !loaded) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'older') {
+      loadHistory(true);
+      return;
+    }
+    var hid = btn.getAttribute('data-hid');
+    getJSON(historyBase + '/' + encodeURIComponent(hid)).then(function (full) {
+      if (!full) return;
+      var data = normalize(full.data);
+      if (act === 'view') {
+        openModal({
+          title: 'Version from ' + fmtWhen(full),
+          text: describe(full.summary) + '. ' + (REASONS[full.reason] || REASONS['']) + '.',
+          body: buildSummary(data, 'as it was on ' + fmtWhen(full)),
+          readOnly: true,
+          primary: 'Bring back this version',
+          onPrimary: function () { bringBack(full, data); }
+        });
+      } else {
+        bringBack(full, data);
+      }
+    }).catch(function () {
+      setStatus('That saved version could not be loaded. Try again.', true);
+    });
+  }
+
   // ---------- Modal ----------
 
   var modalPrimary = null;
@@ -1319,6 +1464,8 @@
     body.value = opts.body || '';
     body.readOnly = !!opts.readOnly;
     body.placeholder = opts.placeholder || '';
+    $('modal-file-row').hidden = !opts.file;
+    $('modal-file').value = '';
     $('modal-error').textContent = '';
     $('modal-error').classList.remove('good');
     $('modal-primary').textContent = opts.primary;
@@ -1364,19 +1511,40 @@
 
   function doRestore() {
     var parsed;
+    var fromLine = '';
     try {
       parsed = JSON.parse($('modal-body').value);
     } catch (_) {
       modalMessage('That is not valid JSON. Paste the whole backup.');
       return;
     }
+    if (isObject(parsed) && typeof parsed.line === 'string') fromLine = parsed.line;
     if (isObject(parsed) && isObject(parsed.data) && !Array.isArray(parsed.dispositions)) parsed = parsed.data;
     if (!validShape(parsed)) {
       modalMessage('That does not look like a credit line backup.');
       return;
     }
-    replaceRecord(parsed);
+    var other = fromLine && fromLine !== LINE
+      ? 'This backup is from ' + (LINES[fromLine] || fromLine) + ', not ' + BANK + '. '
+      : '';
+    if (!window.confirm(other + 'Restore this backup into ' + BANK + '? It replaces this line for everyone. ' +
+      'What is there now is kept in Saved versions first.')) return;
+    replaceRecord(parsed, 'restore');
     closeModal();
+  }
+
+  function onBackupFile() {
+    var file = $('modal-file').files && $('modal-file').files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      $('modal-body').value = String(reader.result || '');
+      modalMessage('Backup file loaded. Click Restore to use it.', true);
+    };
+    reader.onerror = function () {
+      modalMessage('That file could not be read.');
+    };
+    reader.readAsText(file);
   }
 
   // ---------- Wiring ----------
@@ -1418,23 +1586,20 @@
         body: buildSummary(), readOnly: true, primary: 'Copy', onPrimary: copyFromModal
       });
     });
-    $('backup').addEventListener('click', function () {
-      openModal({
-        title: 'Backup', text: 'The full record. Copy it and keep it somewhere safe.',
-        body: JSON.stringify(buildPayload(), null, 2), readOnly: true, primary: 'Copy', onPrimary: copyFromModal
-      });
-    });
     $('restore').addEventListener('click', function () {
       openModal({
-        title: 'Restore', text: 'Paste a backup. It replaces the record for everyone.',
-        body: '', readOnly: false, placeholder: 'Paste the backup here', primary: 'Restore', onPrimary: doRestore
+        title: 'Restore from a backup',
+        text: 'Choose a backup file, or paste a backup below. It replaces this line for everyone. What is there now is kept in Saved versions first.',
+        body: '', readOnly: false, file: true, placeholder: 'Or paste the backup here', primary: 'Restore', onPrimary: doRestore
       });
     });
+    $('modal-file').addEventListener('change', onBackupFile);
+    $('history').addEventListener('click', onHistoryClick);
     $('clear').addEventListener('click', function () {
       if (!loaded) return;
-      if (!window.confirm('Clear everything? The cushion, every disposition and every payment are removed for everyone.')) return;
-      if (!window.confirm('Are you sure? This cannot be undone unless you have a backup.')) return;
-      replaceRecord(emptyRecord());
+      if (!window.confirm('Start this line over? The cushion, every disposition and every payment are removed for everyone.')) return;
+      if (!window.confirm('Are you sure? What is there now is kept in Saved versions, so it can be brought back.')) return;
+      replaceRecord(emptyRecord(), 'clear');
     });
     $('signout').addEventListener('click', function () {
       fetch('/api/logout', { method: 'POST', credentials: 'same-origin' })
@@ -1460,6 +1625,8 @@
 
   function setupLine() {
     document.title = BANK + ' line, use of funds';
+    $('download-json').setAttribute('href', '/api/lines/' + LINE + '/export.json');
+    $('download-csv').setAttribute('href', '/api/lines/' + LINE + '/export.csv');
     $('line-title').textContent = BANK + ' line';
     Array.prototype.forEach.call(document.querySelectorAll('[data-bank]'), function (n) {
       n.textContent = BANK;

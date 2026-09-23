@@ -801,6 +801,71 @@ table.schedule {
   margin-top: 16px;
 }
 
+/* ---------- Saved versions ---------- */
+
+.record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+a.button {
+  display: inline-block;
+  text-decoration: none;
+}
+
+#history {
+  margin-top: 32px;
+}
+
+table.schedule.history-table {
+  min-width: 720px;
+}
+
+.history-table td {
+  white-space: normal;
+}
+
+.history-table td:first-child {
+  white-space: nowrap;
+}
+
+.row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row-actions .link + .link {
+  margin-left: 20px;
+}
+
+.history-more {
+  margin-top: 16px;
+}
+
+.start-over {
+  margin-top: 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+
+.link.danger {
+  color: var(--red);
+}
+
+.modal-file {
+  margin-top: 20px;
+}
+
+.crumbs {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
 /* ---------- Actions ---------- */
 
 .actions {
@@ -1043,6 +1108,37 @@ table.schedule {
 
   .pay-calc {
     padding-left: 0;
+  }
+
+  table.schedule.history-table,
+  .history-table tbody {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .history-table thead {
+    display: none;
+  }
+
+  .history-table tr {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .history-table td,
+  .history-table td:first-child {
+    border-bottom: 0;
+    padding: 0;
+    white-space: normal;
+  }
+
+  .history-table .row-actions {
+    text-align: left;
+    padding-top: 6px;
   }
 }
 

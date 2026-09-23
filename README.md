@@ -56,6 +56,7 @@ npm test
 | `PGSSL` | no | `true` turns on SSL for the database connection (needed for some external databases). |
 | `DATA_FILE` | no | Where the JSON file lives when there is no database. Default `./data/record.json`. |
 | `PORT` | no | Railway sets this. Default 3000. |
+| `HISTORY_EVERY_MS` | no | How often a copy of each line is kept while people work, in milliseconds. Default 600000 (10 minutes). |
 
 The server stops with a clear message if `ACCESS_CODE` or `SESSION_SECRET` is missing.
 
@@ -70,7 +71,8 @@ The server stops with a clear message if `ACCESS_CODE` or `SESSION_SECRET` is mi
    * `DATABASE_URL` with the value `${{Postgres.DATABASE_URL}}` (Railway fills it in from the database service).
 5. Go to Settings, Networking, and click Generate Domain. That is the address to share.
 6. Optional: in Settings, Deploy, set the healthcheck path to `/healthz`.
-7. Moving data from an older copy of the page: open the old page, click Backup, then Copy. Open the matching line on the new page (for example Kapital), click Restore, paste, and click Restore. The restored record replaces what is there for everyone.
+7. Moving data from an older copy of the page: on the old page click Download backup (or Backup, then Copy, on the first version). On the new page open the matching line, click Restore from a backup, choose the file (or paste the text), and click Restore. What was there is kept in Saved versions first.
+8. For an extra safety net on top of Saved versions, open the Postgres service in Railway, go to Backups, and turn on scheduled backups if your plan offers them.
 
 ### Without a database
 
@@ -90,11 +92,37 @@ Each credit line has its own record, a row in the `records` table (or a JSON fil
 | Kapital | `main` (the original record, so nothing was migrated) | `DATA_FILE` |
 | Banco Azteca | `banco-azteca` | `record-banco-azteca.json` next to `DATA_FILE` |
 
-A record is created empty the first time its page is opened. Backup and Restore work per line: a backup from the Kapital page restores into whichever line page you paste it on.
+A record is created empty the first time its page is opened.
 
-To add another credit line, add it to `LINES` in `server.js` and in `public/app.js`, and add a row to `public/index.html`.
+To add another credit line, add it to `LINES` in `server.js` and in `public/app.js`, add it to the allowed pages in `public/login.js`, add a row to `public/index.html`, and reword the "Across both lines" sentence in `public/home.js`.
 
-API (all behind the session): `GET` and `PUT /api/lines/:line/record`, `GET /api/summary` for the front page, and `GET /api/events` for live updates (`changed {line, version}`). `/api/record` still answers for Kapital so an older open tab keeps saving.
+API (all behind the session):
+
+| Route | What it does |
+| --- | --- |
+| `GET`, `PUT /api/lines/:line/record` | Read and save a line (compare and set on `baseVersion`). |
+| `GET /api/lines/:line/history` | Saved versions, newest first (`?limit=` and `?before=` for older ones). |
+| `GET /api/lines/:line/history/:hid` | One saved version with its full data. |
+| `GET /api/lines/:line/export.json` | Backup file download. |
+| `GET /api/lines/:line/export.csv` | Payments spreadsheet download (opens in Excel). |
+| `GET /api/summary` | Headline numbers for the front page. |
+| `GET /api/events` | Live updates: `changed {line, version}`. |
+
+`/api/record` still answers for Kapital so an older open tab keeps saving.
+
+## Saved versions
+
+Section 4 of each line keeps the family's work safe without anyone having to remember a backup:
+
+* Every change is saved to the database as people type.
+* The server also keeps a copy of the line (the `record_history` table, or `history-<id>.json` with the file store):
+  * at least every 10 minutes while people work (change with `HISTORY_EVERY_MS`),
+  * always before a disposition or payment is removed,
+  * always before a restore, and before Start this line over.
+* The newest 500 copies per line are kept. Each shows when it was saved and what it held, and has View and Bring back.
+* Bringing back a copy, restoring a backup file and starting over all keep what was there first, so each one can be undone.
+* Download backup saves the whole line as a file. Download payments for Excel gives one row per payment with its true cost, what it brings back and the net.
+* Restore from a backup takes a downloaded file (or pasted text) and warns when the file comes from the other line.
 
 ## How saving works
 
@@ -110,7 +138,7 @@ API (all behind the session): `GET` and `PUT /api/lines/:line/record`, `GET /api
 * `server.js` Express server, login, security headers, lines, record API, summary, live events.
 * `db.js` PostgreSQL store and JSON file store with the same interface, one record per id.
 * `public/index.html`, `public/home.js` The front page with every source of funds.
-* `public/line.html`, `public/app.js` The credit line page (Kapital, Banco Azteca).
+* `public/line.html`, `public/app.js` The credit line page (Kapital, Banco Azteca), including Saved versions.
 * `public/cash-flow.html` Placeholder for the cash flow tool.
 * `public/styles.css` Styles for every page.
 * `public/login.html`, `public/login.js` The access code page.

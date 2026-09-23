@@ -26,6 +26,9 @@ const SESSION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000;
 const LOGIN_LIMIT = 20;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const HEARTBEAT_MS = 25 * 1000;
+// A copy of each record is kept at least this often while people work (default 10 minutes).
+const HISTORY_EVERY_MS = /^\d+$/.test(process.env.HISTORY_EVERY_MS || '') ? Number(process.env.HISTORY_EVERY_MS) : 10 * 60 * 1000;
+const RESTORE_REASONS = ['restore', 'clear'];
 
 // Each source of funds with its own shared record. Kapital keeps the original 'main' record.
 const LINES = {
@@ -192,8 +195,16 @@ app.get('/healthz', (req, res) => {
   res.type('text/plain').send('ok');
 });
 
+// Pages someone may have been opening when asked to sign in. Only these are followed after login.
+const RETURN_PAGES = Object.keys(LINES).map((id) => '/' + id).concat(['/cash-flow']);
+
+function safeNext(value) {
+  const p = typeof value === 'string' ? value.replace(/\/+$/, '').toLowerCase() : '';
+  return RETURN_PAGES.includes(p) ? p : '/';
+}
+
 app.get('/login', (req, res) => {
-  if (validSession(req)) return res.redirect('/');
+  if (validSession(req)) return res.redirect(safeNext(req.query.next));
   res.sendFile(path.join(PUBLIC_DIR, 'login.html'), fileOptions);
 });
 
@@ -226,7 +237,8 @@ app.post('/api/login', jsonBody, (req, res) => {
 app.use((req, res, next) => {
   if (validSession(req)) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not signed in.' });
-  res.redirect('/login');
+  const back = safeNext(req.path);
+  res.redirect(back === '/' ? '/login' : '/login?next=' + encodeURIComponent(back));
 });
 
 app.post('/api/logout', (req, res) => {
@@ -264,11 +276,17 @@ async function putRecord(req, res, next) {
       return res.status(400).json({ error: 'baseVersion must be a whole number.' });
     }
     if (!validShape(body.data)) return res.status(400).json({ error: 'The record does not have the expected shape.' });
+    const reason = RESTORE_REASONS.includes(body.reason) ? body.reason : '';
 
-    const result = await store.save(LINES[id].record, body.data, baseVersion);
+    const result = await store.save(LINES[id].record, body.data, baseVersion, {
+      reason,
+      everyMs: HISTORY_EVERY_MS,
+      summarize,
+      mustSnapshot: removesSomething
+    });
     if (result.conflict) return res.status(409).json({ version: result.version, data: result.data });
 
-    res.json({ version: result.version });
+    res.json({ version: result.version, snapshot: !!result.snapshot });
     broadcast('changed', { line: id, version: result.version });
   } catch (err) {
     next(err);
@@ -307,6 +325,145 @@ function summarize(data) {
   }
   return { available, cushion, drawn, interest, count, left: available - cushion - drawn };
 }
+
+// Ids of every disposition and payment in a record.
+function idsIn(data) {
+  const ids = new Set();
+  for (const disp of isObject(data) && Array.isArray(data.dispositions) ? data.dispositions : []) {
+    if (!isObject(disp)) continue;
+    ids.add('d:' + disp.id);
+    for (const p of Array.isArray(disp.payments) ? disp.payments : []) {
+      if (isObject(p)) ids.add('p:' + disp.id + ':' + p.id);
+    }
+  }
+  return ids;
+}
+
+// True when a save removes a disposition or a payment: always keep the state before it.
+function removesSomething(prevData, nextData) {
+  const next = idsIn(nextData);
+  for (const id of idsIn(prevData)) {
+    if (!next.has(id)) return true;
+  }
+  return false;
+}
+
+// ---------- History and downloads ----------
+
+app.get('/api/lines/:line/history', async (req, res, next) => {
+  try {
+    const id = lineFor(req, res);
+    if (!id) return;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const before = parseInt(req.query.before, 10);
+    res.json(await store.historyList(LINES[id].record, limit, Number.isInteger(before) && before > 0 ? before : null));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/lines/:line/history/:hid', async (req, res, next) => {
+  try {
+    const id = lineFor(req, res);
+    if (!id) return;
+    const hid = Number(req.params.hid);
+    if (!Number.isInteger(hid) || hid <= 0) return res.status(404).json({ error: 'No such saved version.' });
+    const found = await store.historyGet(LINES[id].record, hid);
+    if (!found) return res.status(404).json({ error: 'No such saved version.' });
+    res.json(found);
+  } catch (err) {
+    next(err);
+  }
+});
+
+function mexicoDate(t) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date(t));
+  } catch (_) {
+    return new Date(t).toISOString().slice(0, 10);
+  }
+}
+
+function attachment(res, filename, type) {
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+}
+
+app.get('/api/lines/:line/export.json', async (req, res, next) => {
+  try {
+    const id = lineFor(req, res);
+    if (!id) return;
+    const rec = await store.get(LINES[id].record);
+    attachment(res, 'aromaria-' + id + '-' + mexicoDate(Date.now()) + '.json', 'application/json; charset=utf-8');
+    res.send(JSON.stringify({
+      app: 'aromaria-use-of-funds',
+      line: id,
+      name: LINES[id].name,
+      exportedAt: new Date().toISOString(),
+      version: rec.version,
+      data: rec.data
+    }, null, 2));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Spreadsheet cells: quote when needed, and never let text start a formula.
+function csvCell(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? String(Math.round(v)) : '';
+  let s = v === null || v === undefined ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function addDays(dateStr, days) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  const start = m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : Date.parse(mexicoDate(Date.now()) + 'T00:00:00Z');
+  return new Date(start + days * 86400000).toISOString().slice(0, 10);
+}
+
+app.get('/api/lines/:line/export.csv', async (req, res, next) => {
+  try {
+    const id = lineFor(req, res);
+    if (!id) return;
+    const rec = await store.get(LINES[id].record);
+    const d = isObject(rec.data) ? rec.data : {};
+    const tiie = d.tiie === undefined || d.tiie === null || d.tiie === '' ? 6.75 : num(d.tiie);
+    const spread = d.spread === undefined || d.spread === null || d.spread === '' ? 5 : num(d.spread);
+    const annual = (tiie + spread) / 100;
+    const bank = LINES[id].name;
+    const rows = [[
+      'Disposition', 'Drawn on', 'Days', 'Back to ' + bank + ' on', 'Disposition amount', 'Disposition interest', 'Repaid',
+      'Payment', 'Amount', 'Type', 'True cost', 'Interest', 'Brings back', 'Comes back on', 'Net after interest', 'Paid',
+      'If we do not pay'
+    ]];
+    (Array.isArray(d.dispositions) ? d.dispositions : []).filter(isObject).forEach((disp, i) => {
+      const amount = Math.max(0, Math.round(num(disp.amount)));
+      const days = [30, 60, 90, 120, 150, 180].includes(Math.round(num(disp.days))) ? Math.round(num(disp.days)) : 90;
+      const name = String(disp.name || '').trim() || 'Disposition ' + (i + 1);
+      const drawnOn = /^\d{4}-\d{2}-\d{2}$/.test(disp.date || '') ? disp.date : '';
+      const head = [name, drawnOn, days, addDays(drawnOn, days), amount, amount * annual * days / 360, disp.repaid ? 'Yes' : 'No'];
+      const payments = (Array.isArray(disp.payments) ? disp.payments : []).filter(isObject);
+      if (!payments.length) rows.push(head.concat(['', '', '', '', '', '', '', '', '', '']));
+      payments.forEach((p) => {
+        const pay = Math.max(0, Math.round(num(p.amount)));
+        const interest = pay * annual * days / 360;
+        const revenue = !!p.revenue;
+        const back = revenue ? Math.max(0, Math.round(num(p.back))) : 0;
+        const backDate = revenue && /^\d{4}-\d{2}-\d{2}$/.test(p.backDate || '') ? p.backDate : '';
+        rows.push(head.concat([
+          String(p.name || '').trim(), pay, revenue ? 'Adds revenue' : 'Obligation', pay + interest, interest,
+          back || '', backDate, back ? back - pay - interest : '', p.paid ? 'Yes' : 'No', String(p.risk || '').trim()
+        ]));
+      });
+    });
+    attachment(res, 'aromaria-' + id + '-payments-' + mexicoDate(Date.now()) + '.csv', 'text/csv; charset=utf-8');
+    res.send('\uFEFF' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n');
+  } catch (err) {
+    next(err);
+  }
+});
 
 app.get('/api/summary', async (req, res, next) => {
   try {

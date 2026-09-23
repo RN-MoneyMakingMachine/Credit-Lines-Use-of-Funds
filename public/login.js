@@ -6,6 +6,13 @@
   var button = document.getElementById('open');
   var error = document.getElementById('error');
 
+  // After signing in, go back to the page that asked for it (only known pages).
+  function nextPage() {
+    var match = /[?&]next=([^&]*)/.exec(window.location.search);
+    var next = match ? decodeURIComponent(match[1]).replace(/\/+$/, '').toLowerCase() : '';
+    return ['/kapital', '/banco-azteca', '/cash-flow'].indexOf(next) >= 0 ? next : '/';
+  }
+
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     error.textContent = '';
@@ -22,7 +29,7 @@
       body: JSON.stringify({ code: code })
     }).then(function (res) {
       if (res.ok) {
-        window.location.href = '/';
+        window.location.href = nextPage();
         return;
       }
       button.disabled = false;
