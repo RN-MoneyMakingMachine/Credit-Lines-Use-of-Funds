@@ -161,6 +161,7 @@
 
   function emptyRecord() {
     return {
+      limit: 0,
       available: 0,
       tiie: 6.75,
       spread: 5,
@@ -223,6 +224,7 @@
     var r = isObject(raw) ? raw : {};
     var cushion = isObject(r.cushion) ? r.cushion : {};
     var out = {
+      limit: money0(r.limit),
       available: money0(r.available),
       tiie: r.tiie === undefined || r.tiie === null || r.tiie === '' ? 6.75 : num(r.tiie),
       spread: r.spread === undefined || r.spread === null || r.spread === '' ? 5 : num(r.spread),
@@ -262,13 +264,14 @@
 
   function pickSettings(r) {
     return {
-      available: r.available, tiie: r.tiie, spread: r.spread,
+      limit: r.limit, available: r.available, tiie: r.tiie, spread: r.spread,
       cushion: { amount: r.cushion.amount, note: r.cushion.note },
       settingsUpdated: r.settingsUpdated
     };
   }
 
   function assignSettings(target, src) {
+    target.limit = src.limit;
     target.available = src.available;
     target.tiie = src.tiie;
     target.spread = src.spread;
@@ -323,6 +326,8 @@
       });
     });
     t.left = r.available - r.cushion.amount - t.drawn;
+    // What the bank already had out before this page: line total minus available today.
+    t.used = r.limit > 0 ? Math.max(0, r.limit - r.available) : 0;
     return t;
   }
 
@@ -335,7 +340,7 @@
   }
 
   function isEmptyRecord(r) {
-    return !r.dispositions.length && !r.available && !r.cushion.amount && !r.cushion.note;
+    return !r.dispositions.length && !r.limit && !r.available && !r.cushion.amount && !r.cushion.note;
   }
 
   // ---------- Collapsed state (per browser) ----------
@@ -570,8 +575,23 @@
       'TIIE plus spread is ' + pct(annual * 100) + ' a year, ' + pct(annual * 100 / 12) + ' a month. ' +
       'A peso drawn for 90 days comes back as ' + (1 + annual * 90 / 360).toFixed(4) + ' pesos.';
 
-    // Allocation bar and legend
-    var base = Math.max(record.available, record.cushion.amount + t.drawn, 1);
+    // Line total and what was already in use before this page
+    var lineSentence = $('line-sentence');
+    lineSentence.classList.remove('bad');
+    if (record.limit > 0 && record.available > record.limit) {
+      lineSentence.textContent = 'Available today (' + money(record.available) + ') is more than the line total (' +
+        money(record.limit) + '). Check both numbers.';
+      lineSentence.classList.add('bad');
+    } else if (record.limit > 0) {
+      lineSentence.textContent = 'Line total ' + money(record.limit) + '. ' + (t.used > 0
+        ? money(t.used) + ' of it was already in use before this page, ' + money(record.available) + ' is available today.'
+        : 'All of it is available today.');
+    } else {
+      lineSentence.textContent = 'Enter the line total to see how much was already in use before this page.';
+    }
+
+    // Allocation bar and legend (the whole line when its total is known)
+    var base = Math.max(record.limit, t.used + record.available, t.used + record.cushion.amount + t.drawn, 1);
     var alloc = $('alloc');
     var segs = [];
     var legend = [];
@@ -582,6 +602,10 @@
     }
     function key(cls, label) {
       legend.push(el('li', {}, [el('span', { class: 'swatch ' + cls }), label]));
+    }
+    if (t.used > 0) {
+      seg('seg-used', t.used);
+      key('seg-used', 'Already in use ' + money(t.used));
     }
     seg('seg-cushion', record.cushion.amount);
     key('seg-cushion', 'Cushion ' + money(record.cushion.amount));
@@ -641,6 +665,7 @@
   }
 
   function renderSettings() {
+    $('limit').value = fmtNum(record.limit);
     $('available').value = fmtNum(record.available);
     $('tiie').value = String(record.tiie);
     $('spread').value = String(record.spread);
@@ -784,6 +809,7 @@
     var t = e.target;
     var before = JSON.stringify(pickSettings(record));
     switch (t.id) {
+      case 'limit': record.limit = reformatMoney(t); break;
       case 'available': record.available = reformatMoney(t); break;
       case 'tiie': record.tiie = num(t.value); break;
       case 'spread': record.spread = num(t.value); break;
@@ -937,7 +963,7 @@
     });
 
     var next = {
-      available: local.available, tiie: local.tiie, spread: local.spread,
+      limit: local.limit, available: local.available, tiie: local.tiie, spread: local.spread,
       cushion: { amount: local.cushion.amount, note: local.cushion.note },
       settingsUpdated: local.settingsUpdated,
       dispositions: [],
@@ -1259,6 +1285,9 @@
     var annual = t.annual;
     var lines = [];
     lines.push('AROMARIA, ' + BANK + ' line, ' + (when || fmtToday()));
+    if (r.limit > 0) {
+      lines.push('Line total ' + money(r.limit) + '. Already in use before this page ' + money(t.used) + '.');
+    }
     lines.push(
       'Available today ' + money(r.available) + '. Cushion ' + money(r.cushion.amount) +
       (r.cushion.note.trim() ? ' (' + r.cushion.note.trim() + ')' : '') + '. Drawn ' + money(t.drawn) +
@@ -1550,7 +1579,7 @@
   // ---------- Wiring ----------
 
   function bind() {
-    var settingsIds = ['available', 'tiie', 'spread', 'cushion-amount', 'cushion-note'];
+    var settingsIds = ['limit', 'available', 'tiie', 'spread', 'cushion-amount', 'cushion-note'];
     settingsIds.forEach(function (id) {
       $(id).addEventListener('input', onSettingsEdit);
       $(id).addEventListener('change', onSettingsEdit);

@@ -26,6 +26,7 @@ const DEFAULT_KEEP = 500;
 
 function emptyRecord() {
   return {
+    limit: 0,
     available: 0,
     tiie: 6.75,
     spread: 5,

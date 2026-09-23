@@ -24,6 +24,10 @@
     <section class="line" data-settings>
       <div class="line-fields">
         <label class="field">
+          <span class="label">Line total</span>
+          <span class="money"><input id="limit" type="text" inputmode="numeric" autocomplete="off" placeholder="0" data-money></span>
+        </label>
+        <label class="field">
           <span class="label">Available today</span>
           <span class="money"><input id="available" type="text" inputmode="numeric" autocomplete="off" placeholder="0" data-money></span>
         </label>
@@ -36,6 +40,7 @@
           <input id="spread" type="number" step="any" min="0" inputmode="decimal" autocomplete="off">
         </label>
       </div>
+      <p class="line-sentence" id="line-sentence"></p>
       <p class="muted" id="rate-sentence"></p>
     </section>
 

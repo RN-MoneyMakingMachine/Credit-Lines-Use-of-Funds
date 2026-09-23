@@ -24,6 +24,9 @@
     (data.lines || []).forEach(function (line) {
       var row = document.querySelector('.fund[data-line="' + line.id + '"]');
       if (!row) return;
+      var limit = row.querySelector('[data-num="limit"]');
+      limit.textContent = line.limit > 0 ? money(line.limit) : 'Not set';
+      limit.classList.toggle('muted', !(line.limit > 0));
       row.querySelector('[data-num="available"]').textContent = money(line.available);
       row.querySelector('[data-num="drawn"]').textContent = money(line.drawn);
       var left = row.querySelector('[data-num="left"]');

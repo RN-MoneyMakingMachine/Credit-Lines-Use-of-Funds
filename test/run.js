@@ -371,6 +371,9 @@ async function testMath() {
   check('nothing drawn sentence', text(a.$('#cost-sentence')) ===
     'Nothing drawn yet. Every peso drawn costs 0.98% a month until it is paid back.', text(a.$('#cost-sentence')));
   check('empty schedule', text(a.$('#schedule')) === 'Nothing to pay yet.');
+  check('asks for the line total', text(a.$('#line-sentence')) === 'Enter the line total to see how much was already in use before this page.',
+    text(a.$('#line-sentence')));
+  check('line total comes before available today', a.$$('.line-fields .label').map(text).join(' | ') === 'Line total | Available today | TIIE % | Spread %');
 
   type(a, a.$('#available'), '17300000');
   check('money input reformats while typing', a.$('#available').value === '17,300,000', a.$('#available').value);
@@ -407,6 +410,21 @@ async function testMath() {
   check('drawn label', text(a.$('#big-drawn-label')) === 'drawn from Kapital in 1 disposition', text(a.$('#big-drawn-label')));
   const legend = a.$$('#legend li').map(text).join(' | ');
   check('legend', legend === 'Cushion $2,000,000 | Disposition 1 $6,000,000 | Available $9,300,000', legend);
+
+  // Line total: the part of the line already in use before this page.
+  type(a, a.$('#limit'), '10000000');
+  check('available more than the line total is flagged', a.$('#line-sentence').classList.contains('bad') &&
+    text(a.$('#line-sentence')) === 'Available today ($17,300,000) is more than the line total ($10,000,000). Check both numbers.',
+    text(a.$('#line-sentence')));
+  type(a, a.$('#limit'), '20000000');
+  blur(a);
+  check('line total sentence', !a.$('#line-sentence').classList.contains('bad') &&
+    text(a.$('#line-sentence')) === 'Line total $20,000,000. $2,700,000 of it was already in use before this page, $17,300,000 is available today.',
+    text(a.$('#line-sentence')));
+  const legend2 = a.$$('#legend li').map(text).join(' | ');
+  check('bar shows what was already in use', legend2 === 'Already in use $2,700,000 | Cushion $2,000,000 | Disposition 1 $6,000,000 | Available $9,300,000', legend2);
+  check('bar is scaled to the whole line', a.$('#alloc .seg-used').style.width === '13.5%', a.$('#alloc .seg-used').style.width);
+  check('still available is unchanged by the line total', text(a.$('#big-left')) === '$9,300,000');
 
   const row = a.$('.pay', block);
   type(a, a.$('[data-pf="name"]', row), 'Coffee beans');
@@ -494,6 +512,7 @@ async function testMath() {
   check('saved status text', /^Saved \d{1,2} [A-Z][a-z]{2}, \d{1,2}:\d{2} (AM|PM)\. Everyone with the code sees this\.$/.test(text(a.$('#status'))), text(a.$('#status')));
   const onServer = await serverRecord();
   check('record reached the server', onServer.data.dispositions.length === 2 && onServer.data.available === 17300000 &&
+    onServer.data.limit === 20000000 &&
     onServer.data.dispositions[0].payments[0].back === 1500000, JSON.stringify(onServer.data).slice(0, 300));
   check('collapsed state is not in the record', !JSON.stringify(onServer.data).includes('collapsed'));
 
@@ -501,6 +520,7 @@ async function testMath() {
   a.$('#copy-summary').click();
   const summary = a.$('#modal-body').value;
   check('summary header', summary.split('\n')[0] === 'AROMARIA, Kapital line, ' + fmtToday(), summary.split('\n')[0]);
+  check('summary has the line total', summary.split('\n')[1] === 'Line total $20,000,000. Already in use before this page $2,700,000.', summary.split('\n')[1]);
   check('summary numbers the payments', /\n1\. Coffee beans, \$1,000,000, really costs \$1,039,167\. Adds revenue\. Brings back \$1,500,000 on Dec 15, 2026, net \$460,833 after interest\./.test(summary), summary);
   check('summary has obligation and if we do not pay', /\n2\. Rent, \$5,000,000, really costs \$5,195,833\. Obligation\./.test(summary) &&
     /If we do not pay: The roaster stops for a month/.test(summary), summary);
@@ -764,6 +784,7 @@ async function testLines() {
   const kGets = () => kLive.statuses.filter((x) => x.startsWith('GET')).length;
   const kGetsBefore = kGets();
 
+  type(az, az.$('#limit'), '12000000');
   type(az, az.$('#available'), '9000000');
   blur(az);
   az.$('#add-disposition').click();
@@ -807,7 +828,7 @@ async function testLines() {
   const a = sum.lines.find((l) => l.id === 'banco-azteca');
   check('summary lists both lines', sum.lines.length === 2 && k && a && a.name === 'Banco Azteca');
   check('summary numbers for Banco Azteca', a.available === 9000000 && a.drawn === 6000000 && Math.round(a.interest) === 235000 &&
-    a.left === 3000000 && a.count === 1, JSON.stringify(a));
+    a.left === 3000000 && a.count === 1 && a.limit === 12000000 && a.used === 3000000, JSON.stringify(a));
   const kRec = (await serverRecord('kapital')).data;
   const kDrawn = kRec.dispositions.reduce((t, x) => t + x.amount, 0);
   check('summary numbers for Kapital include the cushion', k.available === kRec.available && k.cushion === kRec.cushion.amount &&
@@ -820,6 +841,8 @@ async function testLines() {
     azRow.getAttribute('href') === '/banco-azteca');
   check('front page shows Banco Azteca numbers', text(azRow.querySelector('[data-num="available"]')) === '$9,000,000' &&
     text(azRow.querySelector('[data-num="drawn"]')) === '$6,000,000' && text(azRow.querySelector('[data-num="left"]')) === '$3,000,000');
+  check('front page shows the line total', text(azRow.querySelector('[data-num="limit"]')) === '$12,000,000');
+  check('front page says when a line total is not set', text(home.$('.fund[data-line="kapital"] [data-num="limit"]')) === 'Not set');
   const cash = home.$('.fund[data-line="cash-flow"]');
   check('Cash flow holds its place, not clickable', cash.tagName === 'DIV' && /Coming soon/.test(text(cash)));
   const fmt = (n) => (Math.round(n) < 0 ? '-$' : '$') + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');

@@ -21,6 +21,7 @@ Everyone who has the access code sees and edits the same records. Changes save a
 * Back to Kapital on = drawn on date + days (calendar days).
 * A payment really costs amount + amount x annual rate x days / 360, using the days of its disposition.
 * A revenue payment that brings money back: net = brings back minus true cost.
+* Already in use before this page = line total minus available today (draws made before the family started using the page).
 * Still available = available today minus cushion minus everything drawn. Negative means over the line.
 
 Example at TIIE 6.75% and spread 5% (11.75% a year): 6,000,000 drawn for 120 days costs 235,000 in interest.

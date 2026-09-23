@@ -155,7 +155,7 @@ function isNumberish(v) {
 function validShape(data) {
   if (!isObject(data)) return false;
   if (!Array.isArray(data.dispositions)) return false;
-  for (const key of ['available', 'tiie', 'spread', 'settingsUpdated']) {
+  for (const key of ['limit', 'available', 'tiie', 'spread', 'settingsUpdated']) {
     if (!isNumberish(data[key])) return false;
   }
   if (data.cushion !== undefined && !isObject(data.cushion)) return false;
@@ -310,6 +310,7 @@ function summarize(data) {
   const tiie = d.tiie === undefined || d.tiie === null || d.tiie === '' ? 6.75 : num(d.tiie);
   const spread = d.spread === undefined || d.spread === null || d.spread === '' ? 5 : num(d.spread);
   const annual = (tiie + spread) / 100;
+  const limit = Math.max(0, Math.round(num(d.limit)));
   const available = Math.max(0, Math.round(num(d.available)));
   const cushion = isObject(d.cushion) ? Math.max(0, Math.round(num(d.cushion.amount))) : 0;
   let drawn = 0;
@@ -323,7 +324,8 @@ function summarize(data) {
     interest += amount * annual * days / 360;
     count += 1;
   }
-  return { available, cushion, drawn, interest, count, left: available - cushion - drawn };
+  const used = limit > 0 ? Math.max(0, limit - available) : 0;
+  return { limit, used, available, cushion, drawn, interest, count, left: available - cushion - drawn };
 }
 
 // Ids of every disposition and payment in a record.
