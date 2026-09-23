@@ -70,6 +70,7 @@
 
       <p class="sentence" id="cost-sentence"></p>
       <p class="sentence" id="split-sentence"></p>
+      <p class="sentence" id="month-sentence"></p>
     </section>
 
     <section class="block" id="cushion-section">
@@ -102,6 +103,30 @@
       </div>
       <div id="dispositions"></div>
       <button type="button" class="button" id="add-disposition">Add disposition</button>
+
+      <div class="whatif">
+        <h3>Try a draw</h3>
+        <p class="muted">Nothing here is saved. Play with the numbers before drawing for real.</p>
+        <div class="whatif-fields">
+          <label class="field">
+            <span class="label">Amount</span>
+            <span class="money"><input id="whatif-amount" type="text" inputmode="numeric" autocomplete="off" placeholder="0"></span>
+          </label>
+          <label class="field">
+            <span class="label">Repay in</span>
+            <select id="whatif-days">
+              <option value="30">30 days</option>
+              <option value="60">60 days</option>
+              <option value="90" selected>90 days</option>
+              <option value="120">120 days</option>
+              <option value="150">150 days</option>
+              <option value="180">180 days</option>
+            </select>
+          </label>
+          <button type="button" class="button" id="whatif-add">Add it as a disposition</button>
+        </div>
+        <p class="muted whatif-result" id="whatif-result"></p>
+      </div>
     </section>
 
     <section class="block" id="schedule-section">

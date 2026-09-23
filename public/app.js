@@ -352,6 +352,41 @@
     return events;
   }
 
+  // Money on its way back that is set aside for the credit, as dated inflows.
+  function safeInflows(r) {
+    var inflows = [];
+    r.dispositions.forEach(function (d) {
+      d.payments.forEach(function (p) {
+        if (!p.revenue || p.toCredit <= 0) return;
+        var t = parseDate(p.backDate);
+        if (t === null) return;
+        inflows.push({ date: t, amount: p.toCredit });
+      });
+    });
+    inflows.sort(function (a, b) { return a.date - b.date; });
+    return inflows;
+  }
+
+  // How much of each unpaid bank payment the safe covers, walking both lists by date.
+  // Returns a Map from event to the covered amount.
+  function safeCoverage(events, inflows) {
+    var covered = new Map();
+    var balance = 0;
+    var i = 0;
+    events.forEach(function (e) {
+      if (e.paid) return;
+      while (i < inflows.length && inflows[i].date <= e.date) {
+        balance += inflows[i].amount;
+        i++;
+      }
+      if (balance <= 0) return;
+      var take = Math.min(balance, e.amount);
+      covered.set(e, take);
+      balance -= take;
+    });
+    return covered;
+  }
+
   function nextPayment(r, annual) {
     var events = allPaymentEvents(r, annual);
     for (var i = 0; i < events.length; i++) {
@@ -737,8 +772,102 @@
     }
     split.replaceChildren.apply(split, parts);
 
+    renderMonthAhead(annual);
     record.dispositions.forEach(function (d, i) { refreshBlock(d, i, annual); });
     renderSchedule(annual);
+    refreshWhatIf();
+  }
+
+  // What the next 30 days look like: payments to the bank and money coming back.
+  function renderMonthAhead(annual) {
+    var today = parseDate(todayStr());
+    var until = today + 30 * DAY_MS;
+    var payTotal = 0;
+    var payCount = 0;
+    allPaymentEvents(record, annual).forEach(function (e) {
+      if (e.paid || e.date < today || e.date > until) return;
+      payTotal += e.amount;
+      payCount++;
+    });
+    var backTotal = 0;
+    var safeTotal = 0;
+    record.dispositions.forEach(function (d) {
+      d.payments.forEach(function (p) {
+        if (!p.revenue || p.back <= 0) return;
+        var t = parseDate(p.backDate);
+        if (t === null || t < today || t > until) return;
+        backTotal += p.back;
+        safeTotal += Math.min(p.toCredit, p.back);
+      });
+    });
+    var sentence;
+    if (payTotal > 0) {
+      sentence = 'In the next 30 days we pay ' + money(payTotal) + ' to ' + BANK + ' in ' +
+        plural(payCount, 'payment', 'payments');
+      sentence += backTotal > 0
+        ? ' and expect ' + money(backTotal) + ' back' +
+          (safeTotal > 0 ? ', ' + money(safeTotal) + ' of it set aside for the credit.' : '.')
+        : ' and expect no money back.';
+    } else if (backTotal > 0) {
+      sentence = 'In the next 30 days there are no payments to ' + BANK + ', and we expect ' + money(backTotal) +
+        ' back' + (safeTotal > 0 ? ', ' + money(safeTotal) + ' of it set aside for the credit.' : '.');
+    } else {
+      sentence = 'In the next 30 days there are no payments to ' + BANK + ' and no money coming back.';
+    }
+    $('month-sentence').textContent = sentence;
+  }
+
+  // ---------- Try a draw (never saved) ----------
+
+  function whatIfValues() {
+    return { amount: money0(($('whatif-amount').value || '').replace(/,/g, '')), days: toDays($('whatif-days').value) };
+  }
+
+  function refreshWhatIf() {
+    var v = whatIfValues();
+    var out = $('whatif-result');
+    var t = totals(record);
+    out.classList.remove('bad');
+    if (v.amount <= 0) {
+      out.textContent = 'Type an amount to see what it would cost before drawing it.';
+      out.className = 'muted whatif-result';
+      return;
+    }
+    out.className = 'whatif-result';
+    var annual = t.annual;
+    var n = v.days / 30;
+    var interest = interestOf(v.amount, v.days, annual);
+    var monthly = interestOf(v.amount, 30, annual);
+    var due = parseDate(todayStr()) + v.days * DAY_MS;
+    var after = t.left - v.amount;
+    var textOut = 'Drawing ' + money(v.amount) + ' for ' + v.days + ' days costs ' + money(interest) + ' in interest: ' +
+      (n === 1 ? 'one payment of ' + money(monthly) + ' with the principal on ' + fmtDate(due)
+        : n + ' monthly payments of ' + money(monthly) + ', and the principal back on ' + fmtDate(due)) +
+      '. Total ' + money(v.amount + interest) + '. Still available would go from ' + money(t.left) +
+      ' to ' + money(after) + '.';
+    out.textContent = textOut;
+    if (after < 0) {
+      out.appendChild(document.createTextNode(' '));
+      out.appendChild(el('strong', { class: 'bad', text: 'That is ' + money(-after) + ' over the line.' }));
+    }
+  }
+
+  function addWhatIf() {
+    if (!loaded) return;
+    var v = whatIfValues();
+    if (v.amount <= 0) {
+      $('whatif-amount').focus();
+      return;
+    }
+    var d = newDisposition();
+    d.amount = v.amount;
+    d.days = v.days;
+    record.dispositions.push(d);
+    syncBlocks();
+    $('whatif-amount').value = '';
+    markDirty();
+    refreshAll();
+    blocks.get(d.id).querySelector('[data-f="name"]').focus();
   }
 
   function renderSettings() {
@@ -772,24 +901,42 @@
       return;
     }
 
+    var today = parseDate(todayStr());
+    var covered = safeCoverage(events, safeInflows(record));
     var total = 0;
     var repaid = 0;
     var next = null;
+    var lateCount = 0;
+    var lateTotal = 0;
     events.forEach(function (e) {
       total += e.amount;
       if (e.paid) repaid += e.amount;
-      else if (!next) next = e;
+      else {
+        if (!next) next = e;
+        if (e.date < today) {
+          e.late = true;
+          lateCount++;
+          lateTotal += e.amount;
+        }
+      }
     });
 
     var rows = events.map(function (e) {
       var what = e.principal
         ? (e.n === 1 ? 'Principal + interest' : 'Principal + last interest')
         : 'Monthly interest ' + e.k + ' of ' + e.n;
-      var cls = (e.paid ? 'is-paid' : '') + (e === next ? ' is-next' : '');
+      var cls = (e.paid ? 'is-paid' : '') + (e === next ? ' is-next' : '') + (e.late ? ' is-late' : '');
+      var cover = covered.get(e) || 0;
+      var whatCell = el('td', { class: e.principal ? '' : 'muted' }, [what]);
+      if (cover > 0) {
+        whatCell.appendChild(el('span', { class: 'covered', text: cover >= e.amount
+          ? 'Covered by the safe'
+          : 'Partly covered by the safe (' + money(cover) + ')' }));
+      }
       return el('tr', { class: cls.trim() }, [
         el('td', { text: fmtDate(e.date) }),
         el('td', { text: dispName(e.d) }),
-        el('td', { class: e.principal ? '' : 'muted', text: what }),
+        whatCell,
         el('td', { class: 'num', text: money(e.amount) }),
         el('td', { class: 'check' }, [
           el('input', {
@@ -824,7 +971,15 @@
         'The repayment safe holds ' + money(safe) + ' of money on its way back: it covers ' +
         Math.min(100, Math.round(safe / still * 100)) + '% of the ' + money(still) + ' still to pay.' }));
     }
-    parts.push(next ? el('p', { class: 'next-payment' }, [
+    if (lateCount > 0) {
+      parts.push(el('p', { class: 'overdue-note', text:
+        plural(lateCount, 'payment is', 'payments are') + ' overdue: ' + money(lateTotal) + '.' }));
+    }
+    parts.push(next ? el('p', { class: 'next-payment' + (next.late ? ' bad' : '') }, next.late ? [
+      'Overdue: ',
+      el('strong', { text: money(next.amount) + ' to ' + BANK + ' was due on ' + fmtDate(next.date) }),
+      ' (' + dispName(next.d) + ').'
+    ] : [
       'Next payment to ' + BANK + ': ',
       el('strong', { text: money(next.amount) + ' on ' + fmtDate(next.date) }),
       ' (' + dispName(next.d) + ').'
@@ -1712,6 +1867,13 @@
 
     $('schedule').addEventListener('change', onScheduleChange);
     $('add-disposition').addEventListener('click', addDisposition);
+
+    $('whatif-amount').addEventListener('input', function (e) {
+      reformatMoney(e.target);
+      refreshWhatIf();
+    });
+    $('whatif-days').addEventListener('change', refreshWhatIf);
+    $('whatif-add').addEventListener('click', addWhatIf);
 
     $('search').addEventListener('input', applySearch);
     $('show-all').addEventListener('click', function () {

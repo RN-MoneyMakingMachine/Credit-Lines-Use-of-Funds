@@ -8,7 +8,7 @@ The front page lists each source of funds:
 | --- | --- | --- |
 | Kapital | `/kapital` | Revolving credit line. Each draw is a disposition repaid within 30 to 180 days at TIIE plus a spread. |
 | Banco Azteca | `/banco-azteca` | Same tool as Kapital, with its own separate record. |
-| Cash flow | `/cash-flow` | Place held for the next tool. Coming soon. |
+| Cash flow | `/cash-flow` | Month by month: what goes to the banks, what comes back, and the net. Built from the two lines. |
 
 On each credit line page the family decides what stays as a cushion, what each disposition is split into, what each payment really costs once interest is added, which payments bring money back and when, and when the bank gets paid.
 
@@ -22,7 +22,10 @@ Everyone who has the access code sees and edits the same records. Changes save a
 * Interest is paid monthly: one payment of amount x annual rate x 30 / 360 every 30 days after the draw, and the principal goes back together with the last one. The monthly payments add up to the total interest.
 * A payment really costs amount + amount x annual rate x days / 360, using the days of its disposition.
 * A revenue payment that brings money back: net = brings back minus true cost.
-* Part of what a revenue payment brings back can be set aside to repay the credit. Those amounts add up to the repayment safe, shown against what is still to pay.
+* Part of what a revenue payment brings back can be set aside to repay the credit. Those amounts add up to the repayment safe, shown against what is still to pay. When such money has a comes back date, the payment calendar marks the bank payments it arrives in time to cover.
+* A payment is overdue when its date has passed and it is not ticked. Overdue payments show in red on the line, on the front page and in the Before today row of Cash flow.
+* The month ahead sentence adds up the payments and the money coming back in the next 30 days.
+* Try a draw, at the end of section 2, previews the cost and the monthly payments of a draw without saving anything. Add it as a disposition turns the trial into a real one.
 * Already in use before this page = line total minus available today (draws made before the family started using the page).
 * Still available = available today minus cushion minus everything drawn. Negative means over the line.
 
@@ -108,7 +111,8 @@ API (all behind the session):
 | `GET /api/lines/:line/history/:hid` | One saved version with its full data. |
 | `GET /api/lines/:line/export.json` | Backup file download. |
 | `GET /api/lines/:line/export.csv` | Payments spreadsheet download (opens in Excel). |
-| `GET /api/summary` | Headline numbers for the front page. |
+| `GET /api/summary` | Headline numbers for the front page, including the next and overdue payments. |
+| `GET /api/cashflow` | Money out and money back per calendar month, across both lines. |
 | `GET /api/events` | Live updates: `changed {line, version}`. |
 
 `/api/record` still answers for Kapital so an older open tab keeps saving.
@@ -142,7 +146,7 @@ Section 4 of each line keeps the family's work safe without anyone having to rem
 * `db.js` PostgreSQL store and JSON file store with the same interface, one record per id.
 * `public/index.html`, `public/home.js` The front page with every source of funds.
 * `public/line.html`, `public/app.js` The credit line page (Kapital, Banco Azteca), including Saved versions.
-* `public/cash-flow.html` Placeholder for the cash flow tool.
+* `public/cash-flow.html`, `public/cash-flow.js` The month by month cash flow page.
 * `public/styles.css` Styles for every page.
 * `public/login.html`, `public/login.js` The access code page.
 * `test/run.js` End to end checks with jsdom.

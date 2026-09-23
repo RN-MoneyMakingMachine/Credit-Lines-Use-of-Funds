@@ -751,6 +751,35 @@ a.fund:focus-visible {
   margin-top: 16px;
 }
 
+/* ---------- Try a draw ---------- */
+
+.whatif {
+  margin-top: 72px;
+  padding-top: 28px;
+  border-top: 1px solid var(--hairline);
+}
+
+.whatif h3 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+
+.whatif-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(130px, 1fr) auto;
+  gap: 20px;
+  align-items: end;
+  margin-top: 20px;
+  max-width: 720px;
+}
+
+.whatif-result {
+  margin-top: 16px;
+  max-width: 44em;
+}
+
 /* ---------- Schedule ---------- */
 
 #schedule {
@@ -809,6 +838,28 @@ table.schedule {
   padding-left: 12px;
 }
 
+.schedule tr.is-late td:first-child {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.covered {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.overdue-note {
+  margin-top: 12px;
+  color: var(--red);
+  font-weight: 600;
+}
+
+.next-payment.bad,
+.next-payment.bad strong {
+  color: var(--red);
+}
+
 .next-payment {
   margin-top: 12px;
   font-size: 1.1rem;
@@ -821,6 +872,24 @@ table.schedule {
 
 .next-line strong {
   color: var(--ink);
+}
+
+.next-line.overdue {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.cashflow-note {
+  margin-top: 20px;
+  max-width: 44em;
+}
+
+#cashflow {
+  margin-top: 32px;
+}
+
+.schedule tr.is-past td:first-child {
+  color: var(--red);
 }
 
 .schedule tfoot td {
@@ -1136,6 +1205,19 @@ table.schedule.history-table {
 
   .pay-calc {
     padding-left: 0;
+  }
+
+  .whatif {
+    margin-top: 56px;
+  }
+
+  .whatif-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .whatif-fields .button {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   table.schedule.history-table,

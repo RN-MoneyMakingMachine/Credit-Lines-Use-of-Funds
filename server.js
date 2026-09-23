@@ -329,8 +329,12 @@ function summarize(data) {
     }
   }
   const used = limit > 0 ? Math.max(0, limit - available) : 0;
-  // The next unpaid payment: interest every 30 days per disposition, principal with the last one.
+  // The next unpaid payment and anything overdue: interest every 30 days per
+  // disposition, principal with the last one.
+  const today = mexicoDate(Date.now());
   let next = null;
+  let overdueCount = 0;
+  let overdueAmount = 0;
   for (const disp of Array.isArray(d.dispositions) ? d.dispositions : []) {
     if (!isObject(disp)) continue;
     const amount = Math.max(0, Math.round(num(disp.amount)));
@@ -345,11 +349,15 @@ function summarize(data) {
       if (paid) continue;
       const date = addDays(drawnOn, k * 30);
       const pay = monthly + (k === n ? amount : 0);
+      if (date < today) {
+        overdueCount += 1;
+        overdueAmount += pay;
+      }
       if (!next || date < next.date) next = { date, amount: pay };
-      break;
     }
   }
-  return { limit, used, available, cushion, drawn, interest, count, next, safe, left: available - cushion - drawn };
+  if (next) next.overdue = next.date < today;
+  return { limit, used, available, cushion, drawn, interest, count, next, safe, overdueCount, overdueAmount, left: available - cushion - drawn };
 }
 
 // Ids of every disposition and payment in a record.
@@ -515,6 +523,76 @@ app.get('/api/lines/:line/export.csv', async (req, res, next) => {
     }
     attachment(res, 'aromaria-' + id + '-payments-' + mexicoDate(Date.now()) + '.csv', 'text/csv; charset=utf-8');
     res.send('\uFEFF' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n');
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Money out to the banks and money coming back, bucketed by calendar month.
+app.get('/api/cashflow', async (req, res, next) => {
+  try {
+    const today = mexicoDate(Date.now());
+    const buckets = new Map();
+    const lineIds = Object.keys(LINES);
+    function bucket(date) {
+      const key = date < today ? 'past' : date.slice(0, 7);
+      if (!buckets.has(key)) {
+        const b = { key, out: {}, outTotal: 0, back: 0, safe: 0 };
+        for (const id of lineIds) b.out[id] = 0;
+        buckets.set(key, b);
+      }
+      return buckets.get(key);
+    }
+    for (const id of lineIds) {
+      const rec = await store.get(LINES[id].record);
+      const d = isObject(rec.data) ? rec.data : {};
+      const tiie = d.tiie === undefined || d.tiie === null || d.tiie === '' ? 6.75 : num(d.tiie);
+      const spread = d.spread === undefined || d.spread === null || d.spread === '' ? 5 : num(d.spread);
+      const annual = (tiie + spread) / 100;
+      for (const disp of Array.isArray(d.dispositions) ? d.dispositions : []) {
+        if (!isObject(disp)) continue;
+        const amount = Math.max(0, Math.round(num(disp.amount)));
+        if (amount > 0) {
+          const days = [30, 60, 90, 120, 150, 180].includes(Math.round(num(disp.days))) ? Math.round(num(disp.days)) : 90;
+          const n = days / 30;
+          const monthly = amount * annual * 30 / 360;
+          const intPaid = isObject(disp.intPaid) ? disp.intPaid : {};
+          const drawnOn = /^\d{4}-\d{2}-\d{2}$/.test(disp.date || '') ? disp.date : '';
+          for (let k = 1; k <= n; k++) {
+            if (k === n ? !!disp.repaid : !!intPaid[k]) continue;
+            const b = bucket(addDays(drawnOn, k * 30));
+            const pay = monthly + (k === n ? amount : 0);
+            b.out[id] += pay;
+            b.outTotal += pay;
+          }
+        }
+        for (const p of Array.isArray(disp.payments) ? disp.payments : []) {
+          if (!isObject(p) || !p.revenue) continue;
+          const back = Math.max(0, Math.round(num(p.back)));
+          if (back <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(p.backDate || '')) continue;
+          const b = bucket(p.backDate);
+          b.back += back;
+          b.safe += Math.min(back, Math.max(0, Math.round(num(p.toCredit))));
+        }
+      }
+    }
+    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const rows = Array.from(buckets.values())
+      .sort((a, b) => (a.key === 'past' ? -1 : b.key === 'past' ? 1 : a.key < b.key ? -1 : 1))
+      .map((b) => Object.assign(b, {
+        label: b.key === 'past' ? 'Before today' : MONTH_NAMES[Number(b.key.slice(5, 7)) - 1] + ' ' + b.key.slice(0, 4),
+        net: b.back - b.outTotal
+      }));
+    const totals = { out: {}, outTotal: 0, back: 0, safe: 0, net: 0 };
+    for (const id of lineIds) totals.out[id] = 0;
+    for (const b of rows) {
+      for (const id of lineIds) totals.out[id] += b.out[id];
+      totals.outTotal += b.outTotal;
+      totals.back += b.back;
+      totals.safe += b.safe;
+      totals.net += b.net;
+    }
+    res.json({ lines: lineIds.map((id) => ({ id, name: LINES[id].name })), rows, totals });
   } catch (err) {
     next(err);
   }

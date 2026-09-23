@@ -21,6 +21,8 @@ const APP_JS = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const LINE_HTML = fs.readFileSync(path.join(ROOT, 'public', 'line.html'), 'utf8');
 const HOME_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const HOME_JS = fs.readFileSync(path.join(ROOT, 'public', 'home.js'), 'utf8');
+const CASH_HTML = fs.readFileSync(path.join(ROOT, 'public', 'cash-flow.html'), 'utf8');
+const CASH_JS = fs.readFileSync(path.join(ROOT, 'public', 'cash-flow.js'), 'utf8');
 
 let server;
 let cookie = '';
@@ -284,7 +286,7 @@ async function testAuth() {
   res = await api('/banco-azteca');
   check('Banco Azteca page opens', res.status === 200 && /id="dispositions"/.test(await res.text()));
   res = await api('/cash-flow');
-  check('Cash flow placeholder opens', res.status === 200 && /Coming soon/.test(await res.text()));
+  check('Cash flow page opens', res.status === 200 && /id="cashflow"/.test(await res.text()));
   res = await api('/cash-flow', { auth: false });
   check('Cash flow needs a session', res.status === 302);
   res = await api('/banco-azteca', { auth: false });
@@ -500,9 +502,11 @@ async function testMath() {
     rows.map(text).join(' || '));
   check('monthly interest row', a.$$('td', rows[0]).map(text).join(' | ') === 'Oct 23, 2026 | Disposition 1 | Monthly interest 1 of 4 | $58,750 | ',
     a.$$('td', rows[0]).map(text).join(' | '));
-  check('principal row carries the last interest', a.$$('td', rows[4]).map(text).join(' | ') === 'Jan 21, 2027 | Disposition 1 | Principal + last interest | $6,058,750 | ',
+  check('principal row carries the last interest and is partly covered', a.$$('td', rows[4]).map(text).join(' | ') ===
+    'Jan 21, 2027 | Disposition 1 | Principal + last interestPartly covered by the safe ($593,333) | $6,058,750 | ',
     a.$$('td', rows[4]).map(text).join(' | '));
-  check('second disposition monthly row', a.$$('td', rows[3]).map(text).join(' | ') === 'Jan 14, 2027 | Disposition 2 | Monthly interest 1 of 2 | $97,917 | ',
+  check('second disposition monthly row is covered by the safe', a.$$('td', rows[3]).map(text).join(' | ') ===
+    'Jan 14, 2027 | Disposition 2 | Monthly interest 1 of 2Covered by the safe | $97,917 | ',
     a.$$('td', rows[3]).map(text).join(' | '));
   check('calendar total is the grand total to pay', text(a.$('#schedule tfoot')).includes('$16,430,833'), text(a.$('#schedule tfoot')));
   check('the next payment is highlighted', rows[0].classList.contains('is-next') && !rows[1].classList.contains('is-next'));
@@ -886,7 +890,8 @@ async function testLines() {
     home.$$('#next-payments .next-line').map(text).join(' | '));
   check('front page says when a line total is not set', text(home.$('.fund[data-line="kapital"] [data-num="limit"]')) === 'Not set');
   const cash = home.$('.fund[data-line="cash-flow"]');
-  check('Cash flow holds its place, not clickable', cash.tagName === 'DIV' && /Coming soon/.test(text(cash)));
+  check('Cash flow opens from the front page', cash.tagName === 'A' && cash.getAttribute('href') === '/cash-flow' &&
+    /Money in and out by month/.test(text(cash)));
   const fmt = (n) => (Math.round(n) < 0 ? '-$' : '$') + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const allDrawn = k.drawn + a.drawn;
   const allInterest = k.interest + a.interest;
@@ -937,6 +942,143 @@ async function testLines() {
   }
 }
 
+
+async function testPlanning() {
+  section('6. Planning: overdue, month ahead, safe coverage, cash flow, what if');
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const iso = (n) => {
+    const d = new Date(Date.now() + n * 86400000);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  };
+  const fmtIso = (s) => { const p = s.split('-').map(Number); return M[p[1] - 1] + ' ' + p[2] + ', ' + p[0]; };
+
+  // Start both lines from empty.
+  for (const line of ['kapital', 'banco-azteca']) {
+    const cur = await serverRecord(line);
+    const put = await api('/api/lines/' + line + '/record', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseVersion: cur.version, data: { available: 0, tiie: 6.75, spread: 5, cushion: { amount: 0, note: '' }, settingsUpdated: 0, dispositions: [], deleted: {} } })
+    });
+    if (put.status !== 200) throw new Error('reset ' + line + ' failed: ' + put.status);
+  }
+
+  const a = openClient('planning');
+  await waitLoaded(a);
+  type(a, a.$('#available'), '5000000');
+  blur(a);
+
+  // An overdue disposition: drawn 40 days ago for 30 days, its one payment was due 10 days ago.
+  a.$('#add-disposition').click();
+  let d1 = a.$('.disp');
+  setValue(a, a.$('[data-f="date"]', d1), iso(-40));
+  setValue(a, a.$('[data-f="days"]', d1), '30');
+  type(a, a.$('[data-f="amount"]', d1), '1200000');
+  blur(a);
+  let rows = a.$$('#schedule tbody tr');
+  check('an unpaid past payment turns overdue', rows.length === 1 && rows[0].classList.contains('is-late'), rows.map(text).join(' | '));
+  check('overdue line', text(a.$('.overdue-note')) === '1 payment is overdue: $1,211,750.', text(a.$('.overdue-note')));
+  check('next payment line goes red for overdue', a.$('.next-payment').classList.contains('bad') &&
+    text(a.$('.next-payment')) === 'Overdue: $1,211,750 to Kapital was due on ' + fmtIso(iso(-10)) + ' (Disposition 1).',
+    text(a.$('.next-payment')));
+  check('overdue is not counted as the month ahead', text(a.$('#month-sentence')) ===
+    'In the next 30 days there are no payments to Kapital and no money coming back.', text(a.$('#month-sentence')));
+
+  // A disposition drawn today: its first monthly payment lands inside the next 30 days,
+  // and a revenue payment brings money back before that date, set aside for the credit.
+  a.$('#add-disposition').click();
+  const d2 = a.$$('.disp')[1];
+  setValue(a, a.$('[data-f="date"]', d2), iso(0));
+  setValue(a, a.$('[data-f="days"]', d2), '60');
+  type(a, a.$('[data-f="amount"]', d2), '2400000');
+  const pay = a.$('.pay', d2);
+  type(a, a.$('[data-pf="name"]', pay), 'Quick roast batch');
+  type(a, a.$('[data-pf="amount"]', pay), '500000');
+  a.$('[data-pf="revenue"]', pay).click();
+  type(a, a.$('[data-pf="back"]', pay), '1000000');
+  type(a, a.$('[data-pf="toCredit"]', pay), '750000');
+  setValue(a, a.$('[data-pf="backDate"]', pay), iso(20));
+  blur(a);
+  await waitSaved(a, 'planning setup');
+
+  check('month ahead sentence', text(a.$('#month-sentence')) ===
+    'In the next 30 days we pay $23,500 to Kapital in 1 payment and expect $1,000,000 back, $750,000 of it set aside for the credit.',
+    text(a.$('#month-sentence')));
+  rows = a.$$('#schedule tbody tr');
+  check('money arriving before a payment covers it', rows.length === 3 &&
+    /Monthly interest 1 of 2Covered by the safe/.test(text(a.$$('td', rows[1])[2])), rows.map(text).join(' | '));
+  check('the rest partly covers the principal', /Principal \+ last interestPartly covered by the safe \(\$726,500\)/.test(text(a.$$('td', rows[2])[2])),
+    rows.map(text).join(' | '));
+
+  // The summary API and the front page know about the overdue payment.
+  const sum = await (await api('/api/summary')).json();
+  const k = sum.lines.find((l) => l.id === 'kapital');
+  check('summary carries the overdue payment', k.overdueCount === 1 && Math.round(k.overdueAmount) === 1211750 &&
+    k.next && k.next.overdue === true, JSON.stringify(k));
+  const home = openClient('planning-home', { page: '/', html: HOME_HTML, script: HOME_JS });
+  await waitFor(() => /Open a line/.test(text(home.$('#status'))), 'home loaded');
+  check('front page shows the overdue warning', home.$$('#next-payments .next-line.overdue').some((n) =>
+    text(n) === '1 payment to Kapital is overdue, $1,211,750.'), home.$$('#next-payments .next-line').map(text).join(' | '));
+  check('an overdue next payment is not shown as upcoming', !home.$$('#next-payments .next-line').some((n) => /^Next payment to Kapital/.test(text(n))));
+
+  // Cash flow: months from both lines, with the overdue amount in Before today.
+  const flow = await (await api('/api/cashflow')).json();
+  check('cash flow lists both lines', flow.lines.map((l) => l.id).join(',') === 'kapital,banco-azteca');
+  const past = flow.rows[0];
+  check('cash flow starts with Before today', past.key === 'past' && past.label === 'Before today' &&
+    Math.round(past.outTotal) === 1211750 && Math.round(past.net) === -1211750, JSON.stringify(past));
+  const backRow = flow.rows.find((r) => r.key === iso(20).slice(0, 7));
+  check('the month the money comes back', backRow && backRow.back === 1000000 && backRow.safe === 750000, JSON.stringify(flow.rows));
+  const payRow = flow.rows.find((r) => r.key === iso(30).slice(0, 7));
+  check('the month of the first monthly payment', payRow && Math.round(payRow.out.kapital) >= 23500, JSON.stringify(flow.rows));
+  check('cash flow totals', Math.round(flow.totals.outTotal) === 3658750 && flow.totals.back === 1000000 &&
+    flow.totals.safe === 750000 && Math.round(flow.totals.net) === -2658750, JSON.stringify(flow.totals));
+
+  // The cash flow page renders it.
+  const cf = openClient('cashflow', { page: '/cash-flow', html: CASH_HTML, script: CASH_JS });
+  await waitFor(() => /Up to date/.test(text(cf.$('#status'))), 'cash flow page loaded');
+  check('cash flow sentence', text(cf.$('#cashflow-sentence')) ===
+    'Over the months below we pay the banks $3,658,750 and expect $1,000,000 back, $750,000 of it set aside for the credit.',
+    text(cf.$('#cashflow-sentence')));
+  check('cash flow table columns', cf.$$('#cashflow th').map(text).join(' | ') ===
+    'Month | To Kapital | To Banco Azteca | Total to pay | Coming back | For the credit | Net', cf.$$('#cashflow th').map(text).join(' | '));
+  check('cash flow Before today row', text(cf.$('#cashflow tbody td')) === 'Before today');
+  const foot = cf.$$('#cashflow tfoot td').map(text);
+  check('cash flow totals row', foot[0] === 'Total' && foot[3] === '$3,658,750' && foot[4] === '$1,000,000' &&
+    foot[6] === '-$2,658,750' && cf.$('#cashflow tfoot td.bad') !== null, foot.join(' | '));
+
+  // Try a draw: nothing saved until it is added on purpose.
+  check('what if starts with a prompt', text(a.$('#whatif-result')) === 'Type an amount to see what it would cost before drawing it.');
+  type(a, a.$('#whatif-amount'), '5000000');
+  check('what if money input formats', a.$('#whatif-amount').value === '5,000,000');
+  check('what if sentence', text(a.$('#whatif-result')) ===
+    'Drawing $5,000,000 for 90 days costs $146,875 in interest: 3 monthly payments of $48,958, and the principal back on ' +
+    fmtIso(iso(90)) + '. Total $5,146,875. Still available would go from $1,400,000 to -$3,600,000. That is $3,600,000 over the line.',
+    text(a.$('#whatif-result')));
+  check('over the line warning is red', text(a.$('#whatif-result strong.bad')) === 'That is $3,600,000 over the line.');
+  const versionBefore = (await serverRecord('kapital')).version;
+  await sleep(1000);
+  check('trying a draw saves nothing', (await serverRecord('kapital')).version === versionBefore);
+  type(a, a.$('#whatif-amount'), '1000000');
+  check('what if within the line has no warning', !a.$('#whatif-result strong.bad') &&
+    / Still available would go from \$1,400,000 to \$400,000\.$/.test(text(a.$('#whatif-result'))), text(a.$('#whatif-result')));
+  a.$('#whatif-add').click();
+  const added = a.$$('.disp')[2];
+  check('add it as a disposition creates one', a.$$('.disp').length === 3 &&
+    a.$('[data-f="amount"]', added).value === '1,000,000' && a.$('[data-f="days"]', added).value === '90' &&
+    a.doc.activeElement === a.$('[data-f="name"]', added));
+  check('the trial clears after adding', a.$('#whatif-amount').value === '');
+  blur(a);
+  await waitSaved(a, 'what if added');
+  const after = await serverRecord('kapital');
+  check('the added draw reaches the server', after.data.dispositions.length === 3 && after.data.dispositions[2].amount === 1000000 &&
+    after.data.dispositions[2].days === 90);
+
+  for (const cl of [a, home, cf]) {
+    if (cl.dom.sources) cl.dom.sources.forEach((x) => x.close());
+    cl.w.close();
+  }
+}
+
 function fmtToday() {
   const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const d = new Date();
@@ -977,6 +1119,7 @@ async function main() {
     await testMath();
     await testTwoClients();
     await testLines();
+    await testPlanning();
     await testText();
     await testRateLimit();
     section('Console');

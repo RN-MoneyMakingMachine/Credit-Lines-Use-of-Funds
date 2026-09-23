@@ -14,8 +14,16 @@
     <header class="intro">
       <p class="eyebrow">AROMARIA, use of funds</p>
       <h1>Cash flow</h1>
-      <p class="subtitle">Coming soon. This is where the money coming in and going out will be planned, next to the credit lines.</p>
+      <p class="subtitle">Month by month: what goes to the banks, what comes back, and what is left over.</p>
+      <p class="status" id="status" role="status" aria-live="polite">Loading.</p>
     </header>
+
+    <section class="block" id="cashflow-section">
+      <p class="sentence" id="cashflow-sentence"></p>
+      <div id="cashflow"><p class="muted">Loading.</p></div>
+      <p class="muted cashflow-note">Built from the two credit lines: unpaid payments to each bank, and the money revenue payments are expected to bring back. Amounts already ticked as paid are left out.</p>
+    </section>
   </main>
+  <script src="/cash-flow.js"></script>
 </body>
 </html>

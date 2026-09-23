@@ -46,7 +46,15 @@
       interest += line.interest;
       count += line.count;
       safe += line.safe || 0;
-      if (line.next) {
+      if (line.overdueCount > 0) {
+        var warn = document.createElement('p');
+        warn.className = 'next-line overdue';
+        warn.textContent = (line.overdueCount === 1
+          ? '1 payment to ' + line.name + ' is overdue, '
+          : line.overdueCount + ' payments to ' + line.name + ' are overdue, ') + money(line.overdueAmount) + '.';
+        nextLines.push(warn);
+      }
+      if (line.next && !line.next.overdue) {
         var p = document.createElement('p');
         p.className = 'next-line';
         p.appendChild(document.createTextNode('Next payment to ' + line.name + ': '));
